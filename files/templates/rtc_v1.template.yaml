@@ -1,0 +1,53 @@
+# =============================================================================
+# TEMPLATE: rtc_v1  (48-bit RTC with 32 kHz crystal source, CDC handshake)
+# =============================================================================
+# Copy an entry like this into `automated_peripherals:` in soc_build_config.yaml.
+# rtc_v1 SHIPS NEW RTL (ip_bsv/rtc_v1/rtc_v1.bsv), instantiated as a slave in the
+# mixed_cluster. Its interrupt is a DISCRETE PLIC source (grows PLICWidth only).
+#
+# MODES (unified def):
+#   with_io (default) = the RTC clock-out reaches a real chip pin (needs a pin + XDC)
+#   no_io             = PLIC-connected RTC with NO chip pin / no XDC (clock-out unconnected)
+#   Pick per-instance with `rtc_mode:` when you use the `modes:` form below. A plain
+#   `def_path:` has no mode field, so it gets the def's default_mode (with_io).
+# -----------------------------------------------------------------------------
+
+- name: rtc_v1                             # peripheral name; MUST match the ip_bsv/<name> folder + registry key
+
+  # --- def source: pick EXACTLY ONE of (a) or (b) ---
+  # (a) def_path form -> always uses the default mode (with_io):
+  # def_path: ip_bsv/rtc_v1/rtc_v1.yaml    # single path to the IP def yaml (no per-instance mode)
+  # (b) modes form -> each instance chooses its mode via `rtc_mode:` (both keys = same unified file):
+  modes:
+    with_io: ip_bsv/rtc_v1/rtc_v1.yaml     # def used when an instance selects rtc_mode: with_io
+    no_io:   ip_bsv/rtc_v1/rtc_v1.yaml     # def used when an instance selects rtc_mode: no_io
+
+  base_context:                            # fields SHARED by every instance in this entry
+    xdc_file: '{board_dir}/constraints.xdc'  # which XDC file pin patches are written to ({board_dir} auto-filled)
+    verilog_buffer_type: IOBUF             # FPGA buffer primitive wrapping the clock-out pin (with_io only)
+    verilog_buffer_tristate: 1'b0          # IOBUF .T value; 1'b0 = permanent output drive (with_io only)
+
+  instances:                               # one list entry per RTC you want (rtc0, rtc1, ...)
+  - instance_id: '0'                       # RTC index -> name rtc0; drives the auto-generated names (rtc0_io, plic_source, ...)
+    rtc_mode: with_io                      # with_io | no_io  (OMIT this line when using the def_path form)
+    slave_id_macro: RTC0_slave_num         # Soc.defines macro that receives the auto-allocated cluster slot number
+    base_macro: RTC0Base                   # name of the address-window START macro written to Soc.defines
+    base_addr: '0004_0600'                 # START address of this RTC's register window (hex, underscore-separated)
+    end_macro: RTC0End                     # name of the address-window END macro
+    end_addr: '0004_06FF'                  # END address of the window (must not overlap another peripheral)
+    connect_to_plic: true                  # true = route interrupt to PLIC (+1 PLICWidth); false = no PLIC source, no width bump
+    plic_index: 35                         # the PLIC source index; used for the uniqueness / conflict check
+    rtc_io_port_name: rtc0_io_rtc_clock_signal  # REQUIRED by the RTC context generator (the debugsoc clock-out port name)
+    pin_hint: ja[10]                       # preferred board pin for the clock-out (with_io); ignored in no_io
+    fallback_pin: fmc_la_n[06]             # pin used to route the port originally routed to pin_hint, now used by this inst
+  # - instance_id: '1'                     # add a second RTC (rtc1) by uncommenting + giving it its own window/pin
+  #   rtc_mode: with_io                    # e.g. keep the IO line but ...
+  #   slave_id_macro: RTC1_slave_num       # ... its own slave-number macro
+  #   base_macro: RTC1Base                 # ... its own address window START macro
+  #   base_addr: '0004_0700'               # ... a non-overlapping START address
+  #   end_macro: RTC1End                   # ... END macro
+  #   end_addr: '0004_07FF'                # ... END address
+  #   connect_to_plic: false               # ... and (here) NO PLIC interrupt for this one
+  #   rtc_io_port_name: rtc1_io_rtc_clock_signal
+  #   pin_hint: ja[4]
+  #   fallback_pin: fmc_la_p[06]

@@ -1,0 +1,223 @@
+# Centralized config file for Peripheral Automation
+# CONFIG 4 (directory gc2025_autop3_3)
+# Peripherals: RTC0 (PLIC ONLY, NO IO line), UART3 (with pinmux) + UART4 (no pinmux),
+#              I2C2 x1, SPI2+SPI3, GPIO 32..47 (16 lines), Watchdog wd0 x1
+# UART: 2 UARTs -- UART3 through the pinmux (PLIC-routed) + UART4 on dedicated pins
+#   (connect_to_plic: false). This fulfils the "1 with pinmux AND 1 without" request
+#   via the unified UART def + the new connect_to_plic flag (one PLIC-routed added
+#   UART is supported; the extra UART leaves its interrupt unrouted).
+# The "RTC no IO line, PLIC only" instance uses the rtc_v1_noio variant def:
+#   identical to rtc_v1 but with every IO/Verilog-port/IOBUF/XDC patch removed --
+#   the RTC's clock-out interface is left unconnected; only its AXI slave and its
+#   discrete PLIC interrupt (rtc0.rtc_sb_interrupt) are wired.
+
+target_board: nexys_video
+board_dir: boards/nexys_video
+pin_map_path: boards/nexys_video/pin_map.yaml
+
+
+automated_peripherals:
+- name: rtc_v1
+  # RTC0 -- PLIC connected, NO IO line. Uses the merged rtc_v1 def in `no_io` mode
+  # (the with_io IO patches -- chip_io RTCIO, fpga_top pin, XDC -- are skipped).
+  # This replaces the old separate rtc_v1_noio def.
+  modes:
+    with_io: ip_bsv/rtc_v1/rtc_v1.yaml
+    no_io:   ip_bsv/rtc_v1/rtc_v1.yaml
+  base_context:
+    xdc_file: '{board_dir}/constraints.xdc'
+  instances:
+  - instance_id: '0'
+    rtc_mode: no_io
+    slave_id_macro: RTC0_slave_num
+    base_macro: RTC0Base
+    base_addr: '0004_0600'
+    end_macro: RTC0End
+    end_addr: '0004_06FF'
+    connect_to_plic: true
+    plic_index: 35
+    # required by the RTC context generator even though no IO patch consumes it
+    rtc_io_port_name: rtc0_io_rtc_clock_signal
+
+- name: uart_v1
+  # UART3 routed THROUGH the pinmux (PLIC-routed: the single interrupt-connected
+  # added UART). Unified UART def; mode chosen per-instance via uart_mode.
+  modes:
+    with_pinmux:    ip_bsv/uart_v1/uart_v1.yaml
+    without_pinmux: ip_bsv/uart_v1/uart_v1.yaml
+  base_context:
+      xdc_file: '{board_dir}/constraints.xdc'
+  instances:
+      - instance_id: '3'
+        uart_mode: with_pinmux
+        connect_to_plic: true
+        slave_id_macro: UART3_slave_num
+        base_macro: UART3Base
+        base_addr: '0001_1600'
+        end_macro: UART3End
+        end_addr: '0001_1640'
+
+- name: uart_v1
+  # UART4 -- the SECOND added UART, routed WITHOUT the pinmux (dedicated pins).
+  # connect_to_plic: false -> its interrupt is NOT routed to the PLIC (the
+  # framework supports one PLIC-routed added UART, taken by UART3 above). UART4's
+  # AXI slave + RX/TX pins work; only its interrupt line is left unrouted. This
+  # exercises the new universal connect_to_plic flag on the unified UART def.
+  modes:
+    with_pinmux:    ip_bsv/uart_v1/uart_v1.yaml
+    without_pinmux: ip_bsv/uart_v1/uart_v1.yaml
+  base_context:
+      xdc_file: '{board_dir}/constraints.xdc'
+  instances:
+      - instance_id: '4'
+        uart_mode: without_pinmux
+        connect_to_plic: false
+        slave_id_macro: UART4_slave_num
+        base_macro: UART4Base
+        base_addr: '0001_1700'
+        end_macro: UART4End
+        end_addr: '0001_1740'
+        uart_rx_pin: fmc_la_p[07]
+        uart_tx_pin: fmc_la_n[07]
+        uart_rx_fallback: fmc_la_p[08]
+        uart_tx_fallback: fmc_la_n[08]
+        uart_io_standard: LVCMOS12
+
+- name: i2c_v1
+  # One ADDITIONAL direct-routed I2C controller (I2C2).
+  def_path: ip_bsv/i2c_v1/i2c_v1.yaml
+  base_context:
+    xdc_file: '{board_dir}/constraints.xdc'
+    io_standard: LVCMOS12
+  instances:
+  - instance_id: '2'
+    slave_id_macro: I2C2_slave_num
+    base_macro: I2C2Base
+    base_addr: '0004_1600'
+    end_macro: I2C2End
+    end_addr: '0004_16FF'
+    connect_to_plic: true
+    plic_index: 38
+    sda_pin: fmc_la_p[27]
+    scl_pin: fmc_la_n[27]
+    sda_fallback: fmc_la_p[29]
+    scl_fallback: fmc_la_n[29]
+
+- name: sspi_v1
+  # Two ADDITIONAL direct-connected SSPI controllers (SPI2, SPI3). Bus bits 14/15
+  # assume UART3 is present to grow the interrupt bus first -- UART3 IS above.
+  def_path: ip_bsv/sspi_v1/sspi_v1.yaml
+  base_context:
+    xdc_file: '{board_dir}/constraints.xdc'
+    verilog_buffer_type: IOBUF
+    spi_io_standard: LVCMOS12
+  instances:
+  - instance_id: '2'
+    slave_id_macro: SPI2_slave_num
+    base_macro: SPI2Base
+    base_addr: '0002_0200'
+    end_macro: SPI2End
+    end_addr: '0002_02FF'
+    connect_to_plic: true
+    plic_index: 40
+    ext_int_bit: 14
+    mosi_pin: fmc_la_p[02]
+    miso_pin: fmc_la_n[02]
+    nss_pin: fmc_la_p[03]
+    sclk_pin: fmc_la_n[03]
+    mosi_fallback: fmc_la_p[31]
+    miso_fallback: fmc_la_n[31]
+    nss_fallback: fmc_la_p[32]
+    sclk_fallback: fmc_la_n[32]
+  - instance_id: '3'
+    slave_id_macro: SPI3_slave_num
+    base_macro: SPI3Base
+    base_addr: '0002_0300'
+    end_macro: SPI3End
+    end_addr: '0002_03FF'
+    connect_to_plic: true
+    plic_index: 41
+    ext_int_bit: 15
+    mosi_pin: fmc_la_p[04]
+    miso_pin: fmc_la_n[04]
+    nss_pin: fmc_la_p[05]
+    sclk_pin: fmc_la_n[05]
+    mosi_fallback: fmc_la_p[33]
+    miso_fallback: fmc_la_n[33]
+    nss_fallback: fmc_la17_cc_p
+    sclk_fallback: fmc_la18_cc_p
+
+- name: gpio_v1
+  # Extend on-chip GPIO 32 -> 48 (16 new lines gpio_32..gpio_47).
+  def_path: ip_bsv/gpio_v1/gpio_v1.yaml
+  base_context:
+    xdc_file: '{board_dir}/constraints.xdc'
+    gpio_io_standard: LVCMOS12
+    gpio_width: 48
+  instances:
+  - instance_id: '32'
+    gpio_pin: fmc_la_n[16]
+    gpio_fallback: fmc_la_n[26]
+  - instance_id: '33'
+    gpio_pin: fmc_la_p[16]
+    gpio_fallback: fmc_la_p[26]
+  - instance_id: '34'
+    gpio_pin: fmc_la_n[15]
+    gpio_fallback: fmc_la_n[25]
+  - instance_id: '35'
+    gpio_pin: fmc_la_p[15]
+    gpio_fallback: fmc_la_p[25]
+  - instance_id: '36'
+    gpio_pin: fmc_la_n[14]
+    gpio_fallback: fmc_la_n[24]
+  - instance_id: '37'
+    gpio_pin: fmc_la_p[14]
+    gpio_fallback: fmc_la_p[24]
+  - instance_id: '38'
+    gpio_pin: fmc_la_n[13]
+    gpio_fallback: fmc_la_n[23]
+  - instance_id: '39'
+    gpio_pin: fmc_la_p[13]
+    gpio_fallback: fmc_la_p[23]
+  - instance_id: '40'
+    gpio_pin: fmc_la_n[12]
+    gpio_fallback: fmc_la_n[22]
+  - instance_id: '41'
+    gpio_pin: fmc_la_p[12]
+    gpio_fallback: fmc_la_p[22]
+  - instance_id: '42'
+    gpio_pin: fmc_la_n[11]
+    gpio_fallback: fmc_la_n[21]
+  - instance_id: '43'
+    gpio_pin: fmc_la_p[11]
+    gpio_fallback: fmc_la_p[21]
+  - instance_id: '44'
+    gpio_pin: fmc_la_n[10]
+    gpio_fallback: fmc_la_n[20]
+  - instance_id: '45'
+    gpio_pin: fmc_la_p[10]
+    gpio_fallback: fmc_la_p[20]
+  - instance_id: '46'
+    gpio_pin: fmc_la_n[09]
+    gpio_fallback: fmc_la_n[19]
+  - instance_id: '47'
+    gpio_pin: fmc_la_p[09]
+    gpio_fallback: fmc_la_p[19]
+
+- name: watchdog_v1
+  # One direct-connected watchdog timer (wd0), discrete PLIC source.
+  def_path: ip_bsv/watchdog_v1/watchdog_v1.yaml
+  base_context:
+    xdc_file: '{board_dir}/constraints.xdc'
+    wd_io_standard: LVCMOS12
+  instances:
+  - instance_id: '0'
+    slave_id_macro: WD0_slave_num
+    base_macro: WatchDog0Base
+    base_addr: '0004_0900'
+    end_macro: WatchDog0End
+    end_addr: '0004_09FF'
+    connect_to_plic: true
+    plic_index: 43
+    wd_reset_pin: fmc_la_n[19]
+    wd_reset_fallback: fmc_la_n[20]

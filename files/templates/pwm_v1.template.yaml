@@ -1,0 +1,37 @@
+# =============================================================================
+# TEMPLATE: pwm_v1  (widen the PWM cluster 6 -> N channels; pwm6..)
+# =============================================================================
+# Reuses devices/pwm_v2. The single mkpwm slave is WIDENED (not a new slave), so
+# every new channel shares the existing PWM address window. Each new channel's
+# sideband interrupt joins the mixed_cluster interrupt concat -> PLIC.
+#
+# MODES (unified def):
+#   without_pinmux (default) = channel output -> a dedicated FPGA pin
+#   with_pinmux              = channel output -> the pinmux (adds a pwmN slot on cell7)
+#   Pick per-instance with `pwm_mode:`. `pwm_total_channels` is the TOTAL channel
+#   count AFTER this integration (6 base + however many new ones you add).
+# -----------------------------------------------------------------------------
+
+- name: pwm_v1                             # peripheral name; matches ip_bsv/pwm_v1
+  modes:                                   # unified def -> declare both modes (both = same file)
+    with_pinmux:    ip_bsv/pwm_v1/pwm_v1.yaml   # def used when pwm_mode: with_pinmux
+    without_pinmux: ip_bsv/pwm_v1/pwm_v1.yaml   # def used when pwm_mode: without_pinmux
+  # def_path: ip_bsv/pwm_v1/pwm_v1.yaml    # alt form for the common all-dedicated case -> default (without_pinmux)
+
+  base_context:                            # fields shared by every instance here
+    xdc_file: '{board_dir}/constraints.xdc'  # XDC file the pin constraints are written to
+    verilog_buffer_type: IOBUF             # FPGA buffer primitive wrapping each pwm output pin
+    verilog_buffer_tristate: 1'b0          # IOBUF .T value; 1'b0 = permanent output drive
+    pwm_total_channels: 10                 # TOTAL channels after this (e.g. 6 existing + 4 new = 10)
+    pwm_io_standard: LVCMOS12              # IO standard for the pwm output pins
+
+  instances:                              # one entry per NEW channel; instance_id = the channel index
+  - instance_id: '6'                       # -> pwm6 (first new channel; base SoC has pwm0..pwm5)
+    pwm_mode: without_pinmux               # with_pinmux | without_pinmux (OMIT with the def_path form)
+    pwm_pin: fmc_la00_cc_p                 # board pin for this channel's output (without_pinmux mode only)
+    pwm_fallback: fmc_la_p[21]             # pin used to route the port originally routed to pwm_pin, now used by this inst
+    					   # (without_pinmux only)
+  # - instance_id: '7'                     # add each further channel the same way, up to pwm_total_channels-1
+  #   pwm_mode: without_pinmux             # (with_pinmux is bound to cell7, so only ONE channel may use it)
+  #   pwm_pin: fmc_la00_cc_n
+  #   pwm_fallback: fmc_la_n[21]

@@ -1,0 +1,302 @@
+name: "i2c_v1"
+yaml_version: "2.0"
+description: >
+  Add two more direct-routed I2C controllers (I2C2, I2C3) alongside the
+  baseline I2C0/I2C1. Each new instance mirrors the existing i2c0/i2c1 wiring:
+  an mki2c slave in mixed_cluster.bsv (address decoder arm, AXI connection,
+  I2C_out interface, PLIC interrupt), a chip_io I2C_out method in Soc.bsv, and
+  dedicated sda/scl pins in fpga_top.v (ports, wires, SoC port maps, IOBUFs)
+  constrained in the XDC. "Direct routing" = the sda/scl lines go straight to
+  dedicated FPGA pins via IOBUFs, not through the pinmux.
+
+  Shared MixedCluster resources are grown the same width-agnostic way rtc_v1
+  uses, so this composes with rtc/uart/gpio regardless of order (keep rtc_v1
+  listed before i2c_v1):
+    * MixedCluster_Num_Slaves / _err_slave_num: cluster_config counters that
+      increment by the number of new instances. Each I2C{N}_slave_num is the
+      err-slot the counter is displacing, so on this board (rtc already took
+      10/11, err=12) I2C2=12, I2C3=13, err->14, Num->15.
+    * PLIC: each i2c{N}.isint is inserted into plic_inputs by the plic_vector
+      handler and the mkplic wrapper width is synced — exactly like rtc. i2c's
+      interrupts are discrete signals (not via wr_external_interrupts), so the
+      interrupt-method width is untouched.
+
+  Instances are order-independent here (the PLIC handler sorts by plic_index;
+  ports/methods/IOBUFs don't care), so list them ascending (2, 3).
+
+anchors:
+  # ---- Soc.defines: slave-count counters + per-instance slave num + addresses ----
+  soc_defines_num_slaves:
+    file: "{board_dir}/Soc.defines"
+    pattern: '^`define\s+MixedCluster_Num_Slaves\s+\d+'
+    position: "replace"
+
+  soc_defines_err_slave:
+    file: "{board_dir}/Soc.defines"
+    pattern: '^`define\s+MixedCluster_err_slave_num\s+\d+'
+    position: "replace"
+
+  soc_defines_memory:
+    file: "{board_dir}/Soc.defines"
+    pattern: "^`define I2C1End\\s+'h0004_14FF"
+    position: "after"
+
+  # I2C2/I2C3 (0004_1600..0004_17FF) sit above the pinmux window, which is where
+  # the mixed cluster used to end. Widen the outer slow-fabric window so those
+  # addresses are routed into the mixed cluster instead of the top-level error
+  # slave. i2c_v1 is the only IP whose addresses land past 0004_15FF, so it owns
+  # this bump; gptimer4/watchdog/rtc all fit under the old end and need nothing.
+  soc_defines_cluster_end:
+    file: "{board_dir}/Soc.defines"
+    pattern: "^`define\\s+MixedClusterEnd\\s+'h0004_15FF"
+    position: "replace"
+
+  # ---- mixed_cluster.bsv ----
+  mixed_cluster_interface_decl:
+    file: "{board_dir}/mixed_cluster.bsv"
+    pattern: 'method I2C_out i2c1_out; //I2c IO interface'
+    position: "after"
+
+  mixed_cluster_instantiation:
+    file: "{board_dir}/mixed_cluster.bsv"
+    pattern: 'let i2c1 <- mki2c;'
+    position: "after"
+
+  mixed_cluster_addr_decoder:
+    file: "{board_dir}/mixed_cluster.bsv"
+    pattern: 'slave_num = `I2C0_slave_num;'
+    position: "after"
+
+  mixed_cluster_axi_conn:
+    file: "{board_dir}/mixed_cluster.bsv"
+    pattern: 'mkConnection \(fabric\.v_to_slaves \[`I2C1_slave_num \], i2c1\.slave\);'
+    position: "after"
+
+  mixed_cluster_interface_impl:
+    file: "{board_dir}/mixed_cluster.bsv"
+    pattern: 'method I2C_out i2c1_out= i2c1\.io;'
+    position: "after"
+
+  # ---- mixed_cluster.bsv: PLIC vector -- INSERT into this IP's group ----
+  # i2c2/i2c3 go directly ABOVE i2c1, keeping i2c3..0 contiguous and descending.
+  mixed_cluster_plic_vector:
+    file: "{board_dir}/mixed_cluster.bsv"
+    pattern: '^\s*i2c1\.isint,'
+    position: "before"
+
+
+  # ---- Soc.bsv: chip_io I2C_out method (decl + impl) ----
+  soc_bsv_chip_io_decl:
+    file: "{board_dir}/Soc.bsv"
+    pattern: 'method I2C_out i2c1_out; //I2c IO interface'
+    position: "after"
+
+  soc_bsv_chip_io_impl:
+    file: "{board_dir}/Soc.bsv"
+    pattern: 'method  i2c1_out = mixed_cluster\.i2c1_out; //I2c IO interface'
+    position: "after"
+
+  # ---- fpga_top.v: dedicated sda/scl ports, wires, SoC port maps, IOBUFs ----
+  fpga_port:
+    file: "{board_dir}/fpga_top.v"
+    pattern: 'inout         i2c1_scl,'
+    position: "after"
+
+  fpga_wires:
+    file: "{board_dir}/fpga_top.v"
+    pattern: 'wire i2c1_sda_out, i2c1_sda_in, i2c1_sda_out_en;'
+    position: "after"
+
+  fpga_inst_ports:
+    file: "{board_dir}/fpga_top.v"
+    pattern: '\.i2c1_out_sda_out_en\(i2c1_sda_out_en\),'
+    position: "after"
+
+  fpga_iobuf:
+    file: "{board_dir}/fpga_top.v"
+    pattern: 'IOBUF i2c1_sda_inst\([\s\S]*?\);'
+    position: "after"
+    multiline: true
+
+  # ---- constraints.xdc ----
+  xdc_pin_assign:
+    type: "xdc_pin_assign"
+    file: "{xdc_file}"
+
+  # ---- Soc.defines: this IP's slave number, emitted NEXT TO ITS FAMILY ----
+  # I2C2/I2C3 sit with I2C0/I2C1 rather than in a lump above the err slot.
+  soc_defines_family_slot:
+    file: "{board_dir}/Soc.defines"
+    pattern: '^`define\s+I2C1_slave_num\s+\d+'
+    position: "after"
+
+  # ---- Soc.defines: derived PLIC width (UserManual Section 21) ----
+  soc_defines_plic_width:
+    file: "{board_dir}/Soc.defines"
+    pattern: '^`define\s+PLICWidth\s+\d+'
+    position: "replace"
+
+patches:
+  # === Soc.defines: grow `PLICWidth by this IP's discrete PLIC signal count ===
+  # `PLICWidth is no longer rewritten by the plic_vector handler; it is DERIVED
+  # in Soc.defines and each contributing IP bumps it by its instance count.
+  # Guarded on `I2C2Base, which the soc_defines_memory patch writes -- so this
+  # counter is listed FIRST and still sees a pristine Soc.defines on a first run.
+  - anchor_ref: "soc_defines_plic_width"
+    plic_gated: true   # connect_to_plic gate (skipped when false)
+    code: "`define PLICWidth {calculated_val}"
+    skip_if_contains: "`define I2C2Base"
+    apply_once: true
+    type: "cluster_config"
+    target_macro: "PLICWidth"
+    increment_by_instances: true
+
+  # === Soc.defines: slave-count counters (grow by #instances) ===
+  - anchor_ref: "soc_defines_num_slaves"
+    code: "`define MixedCluster_Num_Slaves {calculated_val}"
+    skip_if_contains: "`define {slave_id_macro}"
+    apply_once: true
+    type: "cluster_config"
+    target_macro: "MixedCluster_Num_Slaves"
+    increment_by_instances: true
+
+  - anchor_ref: "soc_defines_err_slave"
+    code: "`define MixedCluster_err_slave_num {calculated_val}"
+    skip_if_contains: "`define {slave_id_macro}"
+    type: "cluster_config"
+    target_macro: "MixedCluster_err_slave_num"
+    increment_by_instances: true
+
+  # === Soc.defines: slave number, next to its family ===
+  # {allocated_slot} is published onto the instance by the err_slave
+  # cluster_config patch ABOVE, so this must stay after it.
+  - anchor_ref: "soc_defines_family_slot"
+    code: "`define {slave_id_macro} {allocated_slot}"
+    skip_if_contains: "`define {slave_id_macro}"
+    instance_aware: true
+
+  # === Soc.defines: per-instance address map (mirrors rtc's format) ===
+  - anchor_ref: "soc_defines_memory"
+    code: |
+      {base_macro}    'h{base_addr}
+      {end_macro}     'h{end_addr}
+    skip_if_contains: "`define {base_macro}"
+    instance_aware: true
+
+  # === Soc.defines: widen the slow-fabric mixed cluster window (one-time) ===
+  - anchor_ref: "soc_defines_cluster_end"
+    code: "`define MixedClusterEnd   'h0004_17FF"
+    skip_if_matches: "`define\\s+MixedClusterEnd\\s+'h0004_17FF"
+    apply_once: true
+
+  # === mixed_cluster.bsv: interface declaration ===
+  - anchor_ref: "mixed_cluster_interface_decl"
+    code: "method I2C_out i2c{instance_id}_out; //I2c IO interface"
+    skip_if_contains: "i2c{instance_id}_out;"
+    instance_aware: true
+    indent_context: "interface_body"
+
+  # === mixed_cluster.bsv: mki2c instantiation ===
+  - anchor_ref: "mixed_cluster_instantiation"
+    code: "let i2c{instance_id} <- mki2c;"
+    skip_if_contains: "let i2c{instance_id} <-"
+    instance_aware: true
+    indent_context: "module_body"
+
+  # === mixed_cluster.bsv: address-decoder arm ===
+  - anchor_ref: "mixed_cluster_addr_decoder"
+    code: |
+      else if(addr>= `{base_macro} && addr<= `{end_macro})
+        slave_num = `{slave_id_macro};
+    skip_if_contains: "`{base_macro}"
+    instance_aware: true
+    indent_context: "function_body"
+
+  # === mixed_cluster.bsv: AXI slave connection ===
+  - anchor_ref: "mixed_cluster_axi_conn"
+    code: "mkConnection (fabric.v_to_slaves [`{slave_id_macro} ], i2c{instance_id}.slave);"
+    skip_if_contains: "i2c{instance_id}.slave"
+    instance_aware: true
+    indent_context: "module_body"
+
+  # === mixed_cluster.bsv: I2C_out interface wiring ===
+  - anchor_ref: "mixed_cluster_interface_impl"
+    code: "method I2C_out i2c{instance_id}_out= i2c{instance_id}.io;"
+    skip_if_contains: "i2c{instance_id}_out= i2c{instance_id}.io"
+    instance_aware: true
+    indent_context: "module_body"
+
+  # === mixed_cluster.bsv: PLIC vector — insert i2c{N}.isint (width-agnostic) ===
+  - anchor_ref: "mixed_cluster_plic_vector"
+    plic_gated: true   # connect_to_plic gate (skipped when false)
+    code: "i2c{instance_id}.isint,"
+    skip_if_contains: "i2c{instance_id}.isint,"
+    instance_aware: true
+    reverse_instances: true
+
+
+  # === Soc.bsv: chip_io I2C_out method (declaration + implementation) ===
+  - anchor_ref: "soc_bsv_chip_io_decl"
+    code: "method I2C_out i2c{instance_id}_out; //I2c IO interface"
+    skip_if_contains: "i2c{instance_id}_out;"
+    instance_aware: true
+    indent_context: "interface_body"
+
+  - anchor_ref: "soc_bsv_chip_io_impl"
+    code: "method  i2c{instance_id}_out = mixed_cluster.i2c{instance_id}_out; //I2c IO interface"
+    skip_if_contains: "i2c{instance_id}_out = mixed_cluster"
+    instance_aware: true
+    indent_context: "module_body"
+
+  # === fpga_top.v: dedicated ports (Verilog — indent observed from anchor) ===
+  - anchor_ref: "fpga_port"
+    code: |
+      inout         i2c{instance_id}_sda,
+      inout         i2c{instance_id}_scl,
+    skip_if_contains: "i2c{instance_id}_sda,"
+    instance_aware: true
+
+  - anchor_ref: "fpga_wires"
+    code: |
+      wire i2c{instance_id}_scl_out, i2c{instance_id}_scl_in, i2c{instance_id}_scl_out_en;
+      wire i2c{instance_id}_sda_out, i2c{instance_id}_sda_in, i2c{instance_id}_sda_out_en;
+    skip_if_contains: "wire i2c{instance_id}_scl_out,"
+    instance_aware: true
+
+  - anchor_ref: "fpga_inst_ports"
+    code: |
+      .i2c{instance_id}_out_scl_out (i2c{instance_id}_scl_out),
+      .i2c{instance_id}_out_scl_in_in(i2c{instance_id}_scl_in),
+      .i2c{instance_id}_out_scl_out_en(i2c{instance_id}_scl_out_en),
+      .i2c{instance_id}_out_sda_out(i2c{instance_id}_sda_out),
+      .i2c{instance_id}_out_sda_in_in(i2c{instance_id}_sda_in),
+      .i2c{instance_id}_out_sda_out_en(i2c{instance_id}_sda_out_en),
+    skip_if_contains: ".i2c{instance_id}_out_scl_out "
+    instance_aware: true
+
+  # One-line IOBUFs per line (functionally identical to the baseline multi-line form)
+  - anchor_ref: "fpga_iobuf"
+    code: |
+      IOBUF i2c{instance_id}_scl_inst(.O(i2c{instance_id}_scl_in),.IO(i2c{instance_id}_scl),.I(i2c{instance_id}_scl_out),.T(~i2c{instance_id}_scl_out_en));
+      IOBUF i2c{instance_id}_sda_inst(.O(i2c{instance_id}_sda_in),.IO(i2c{instance_id}_sda),.I(i2c{instance_id}_sda_out),.T(~i2c{instance_id}_sda_out_en));
+    skip_if_contains: "IOBUF i2c{instance_id}_scl_inst"
+    instance_aware: true
+
+  # === constraints.xdc: dedicated sda/scl pins (with conflict fallback) ===
+  - anchor_ref: "xdc_pin_assign"
+    port_name: "i2c{instance_id}_sda"
+    target_board_pin: "{sda_pin}"
+    fallback_pin: "{sda_fallback}"
+    io_standard: "{io_standard}"
+    skip_if_contains: "get_ports {i2c{instance_id}_sda}"
+    instance_aware: true
+    type: "xdc_pin_assign"
+
+  - anchor_ref: "xdc_pin_assign"
+    port_name: "i2c{instance_id}_scl"
+    target_board_pin: "{scl_pin}"
+    fallback_pin: "{scl_fallback}"
+    io_standard: "{io_standard}"
+    skip_if_contains: "get_ports {i2c{instance_id}_scl}"
+    instance_aware: true
+    type: "xdc_pin_assign"

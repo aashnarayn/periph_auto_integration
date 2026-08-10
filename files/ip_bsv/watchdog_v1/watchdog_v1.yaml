@@ -1,0 +1,397 @@
+name: "watchdog_v1"
+yaml_version: "2.0"
+description: >
+  Add ONE direct-connected watchdog timer (wd0) to the mixed cluster.
+
+  The watchdog IP already exists at devices/watchdog/watchdog.bsv but is wired
+  into nothing: no SoC instantiates it, `devices/watchdog/` is not on the bsvpath,
+  and mixed_cluster.bsv has neither the import nor a synthesis wrapper. This def
+  adds all three, gives the watchdog an address window and a cluster slave slot,
+  routes its interrupt to the PLIC, and exports its reset_out to a dedicated pin.
+  No new BSV source is added -- the RTL is reused as-is.
+
+  "Direct connection" = wd0_reset_out is a plain top-level Verilog `output` wired
+  straight to the SoC instance and constrained to one FPGA pin. It does NOT pass
+  through the pinmux, and -- like gptimer0..3 -- it needs no IOBUF, because it is
+  a pure output rather than a bidirectional pad.
+
+  RESET SEMANTICS: `reset_out` is documented in watchdog.bsv as "active low reset
+  out which would reset the SoC". Here it is deliberately routed ONLY to an
+  observation pin; it is NOT fed back into the SoC reset tree. That keeps this
+  peripheral free of the reset infrastructure (and of any risk of an
+  unrecoverable reset loop). Software uses the PLIC interrupt instead, which is
+  what wd_control[1]==0 ("interrupt mode") is for. Wiring reset_out into the reset
+  tree is a separate, invasive change: it would touch reset generation in
+  Soc.bsv / DebugSoc.bsv / fpga_top.v and would need a raw external reset for the
+  watchdog's own ext_rst so the watchdog survives the reset it triggers.
+
+  SYNTHESIS WRAPPER: `mkwatchdog_axi4lite(Reset ext_rst, Integer wd_control,
+  Integer reset_cycles, ifc)` cannot be a synthesis boundary directly -- its
+  Integer parameters are compile-time only. The injected `mkwdt` wrapper pins them
+  down and takes NO Reset argument; it calls `exposeCurrentReset` and passes that
+  as ext_rst. Passing the reset in as a module port instead makes bsc emit two
+  (G0043) multiple-reset warnings on `rl_capture_write_req`, because the AXI
+  transactor (default reset) and the watchdog core (`reset_by ext_rst`) then look
+  like distinct reset domains. Sourcing the reset from inside the wrapper makes
+  them provably the same reset and the warnings disappear.
+
+  PARAMETERS: wd_control = 0 and reset_cycles = 100 are baked into the wrapper.
+  wd_control = 0 leaves the watchdog DISABLED at power-on (bit[0] = enable,
+  bit[1] = reset-vs-interrupt mode, bit[2] = lock), so it can never fire before
+  firmware configures it. Both remain runtime-writable at register offsets 0x8 and
+  0x10 of the watchdog's window.
+
+  INDEPENDENCE: no ORDERING dependency on any other IP.
+    * Cluster slave slot. WD0_slave_num is NOT hardcoded: it is the
+      `allocated_slot` the MixedCluster_err_slave_num counter is displacing,
+      computed at apply time. Standalone it takes slot 10; after rtc + i2c +
+      gptimer it takes 15. No fixed slave number, no required list position.
+    * PLIC. wd0.interrupt is a DISCRETE signal inserted into the plic_inputs
+      concat by the width-agnostic plic_vector handler, with the mkplic wrapper
+      width synced from the handler's shared state -- exactly as rtc_v1, i2c_v1
+      and gptimer_v1 do. It does NOT consume a bit of the shared
+      `wr_external_interrupts` bus, so it never touches the Bit#(13) interrupt
+      method width and carries no `ext_int_bit`. That frees it of the ordering
+      coupling between uart_v1 (bus 13->14) and sspi_v1 (bus 14->16).
+    * Anchors. Every anchor it matches exists in a pristine tree and is matched
+      with `position: after` (never `replace`, except the two Soc.defines counters
+      and the mkplic width, which are width-agnostic). Nothing it touches is
+      consumed, so rtc/gptimer/pwm, which share some of the same pristine anchor
+      lines, compose with it in any order.
+    * TbSoc. reset_out is an OUTPUT and `interrupt` never reaches chip_io, so no
+      always_enabled input is added and TbSoc.bsv needs no tie-off patch.
+  It may therefore be listed ANYWHERE in soc_build_config.yaml.
+
+  IDEMPOTENCY: every patch carries a skip guard, so re-running any phase is a
+  no-op. The counter patches guard on `\`define WD0_slave_num`, NOT on
+  {calculated_val} (only known at apply time, so a guard built from it could never
+  match and the counters would grow on every re-run). The plic_vector handler is
+  delta-aware and, once its signal is present, leaves shared_state['plic_width']
+  unset so the dependent mkplic wrapper patch skips too.
+
+  ELECTRICALS: wd0_reset_out lands on fmc_la_n[19], in the FMC-LA VADJ bank at
+  1.2 V -- hence LVCMOS12, matching gptimer2/3, i2c1 and gpio_29..31. Every
+  FMC-LA pin is now spoken for as some peripheral's primary or fallback, so
+  fmc_la_n[19] is chosen because it is only ever gpio_46's fallback, and gpio_46's
+  primary (fmc_la_n[09]) is always free -- that fallback can never fire.
+
+# =============================================================================
+# ANCHORS
+# =============================================================================
+anchors:
+  # ---- bsvpath: register devices/watchdog/ so bsc can find the package ----
+  # BSVINCDIR in makefile.inc is regenerated from bsvpath by run_setup_build,
+  # and quick_build_automated runs update_bsvpath before it -- so patching
+  # bsvpath alone is sufficient; makefile.inc is never patched directly.
+  bsvpath_tcm:
+    file: "bsvpath"
+    pattern: '^devices/tcm$'
+    position: "after"
+
+  # ---- Soc.defines ----
+  soc_defines_memory:
+    file: "{board_dir}/Soc.defines"
+    # See rtc_v1: distinct anchor so gptimer4 / rtc / watchdog do not contend.
+    pattern: '^`define PLICBase'
+    position: "before"
+
+  soc_defines_num_slaves:
+    file: "{board_dir}/Soc.defines"
+    pattern: '^`define\s+MixedCluster_Num_Slaves\s+\d+'
+    position: "replace"
+
+  soc_defines_err_slave:
+    file: "{board_dir}/Soc.defines"
+    pattern: '^`define\s+MixedCluster_err_slave_num\s+\d+'
+    position: "replace"
+
+  # ---- mixed_cluster.bsv ----
+  mixed_cluster_import:
+    file: "{board_dir}/mixed_cluster.bsv"
+    pattern: '^\s*import gptimer::\*;'
+    position: "after"
+
+  # The mkpinmuxtop block is a pristine, never-consumed landmark; rtc_v1 hangs its
+  # own wrapper off the same line with position: after, so both compose.
+  mixed_cluster_wrapper:
+    file: "{board_dir}/mixed_cluster.bsv"
+    pattern: '\(\*synthesize\*\)\s*\n\s*module mkpinmuxtop\(Ifc_pinmux_axi4lite#\(`paddr, `buswidth, `USERSPACE\)\);\s*\n\s*let ifc\(\);\s*\n\s*mkpinmux_axi4lite _temp\(ifc\);\s*\n\s*return ifc;\s*\n\s*endmodule'
+    position: "after"
+    multiline: true
+
+  mixed_cluster_interface_decl:
+    file: "{board_dir}/mixed_cluster.bsv"
+    pattern: '^\s*method Bit#\(2\) sb_ext_interrupt;'
+    position: "after"
+
+  mixed_cluster_addr_decoder:
+    file: "{board_dir}/mixed_cluster.bsv"
+    pattern: 'slave_num = `XADC_slave_num;'
+    position: "after"
+
+  mixed_cluster_instantiation:
+    file: "{board_dir}/mixed_cluster.bsv"
+    pattern: '^\s*let pinmuxtop <- mkpinmuxtop\(\);'
+    position: "after"
+
+  mixed_cluster_axi_conn:
+    file: "{board_dir}/mixed_cluster.bsv"
+    pattern: 'mkConnection \(fabric\.v_to_slaves \[`Pinmux_slave_num \], pinmuxtop\.slave\);'
+    position: "after"
+
+  mixed_cluster_method_impl:
+    file: "{board_dir}/mixed_cluster.bsv"
+    pattern: '^\s*method I2C_out i2c1_out= i2c1\.io;'
+    position: "after"
+
+  # ---- Soc.defines: derived PLIC width (UserManual Section 21) ----
+  soc_defines_plic_width:
+    file: "{board_dir}/Soc.defines"
+    pattern: '^`define\s+PLICWidth\s+\d+'
+    position: "replace"
+
+  # ---- mixed_cluster.bsv: PLIC vector + mkplic wrapper width ----
+  # ---- mixed_cluster.bsv: PLIC vector -- INSERT into this IP's group ----
+  # watchdog has no family, so it sits at the MSB with the other discrete sources.
+  mixed_cluster_plic_vector:
+    file: "{board_dir}/mixed_cluster.bsv"
+    pattern: '^\s*// ---- discrete PLIC sources \(added by automation\) ----'
+    position: "after"
+
+
+  # ---- Soc.bsv ----
+  # No `import watchdog::*;` is needed here: chip_io only exposes a Bit#(1).
+  soc_bsv_chip_io_decl:
+    file: "{board_dir}/Soc.bsv"
+    pattern: 'interface IOCellSide iocell_io;'
+    position: "after"
+
+  soc_bsv_chip_io_bind:
+    file: "{board_dir}/Soc.bsv"
+    pattern: 'interface iocell_io = mixed_cluster\.pinmuxtop_iocell_side;.*'
+    position: "after"
+
+  # ---- fpga_top.v: plain output port, no IOBUF (mirrors gptimer0..3) ----
+  fpga_top_port_decl:
+    file: "{board_dir}/fpga_top.v"
+    pattern: '// ---- direct-connected peripheral ports \(added by automation\) ----'
+    position: "after"
+
+  fpga_top_soc_inst:
+    file: "{board_dir}/fpga_top.v"
+    pattern: '// ---- direct-connected peripheral port maps \(added by automation\) ----'
+    position: "after"
+
+  # ---- constraints.xdc ----
+  xdc_pin_assign:
+    type: "xdc_pin_assign"
+    file: "{xdc_file}"
+
+# =============================================================================
+# PATCHES
+# =============================================================================
+patches:
+  # === Soc.defines: grow `PLICWidth by this IP's discrete PLIC signal count ===
+  # `PLICWidth is no longer rewritten by the plic_vector handler; it is DERIVED
+  # in Soc.defines and each contributing IP bumps it by its instance count.
+  # Guarded on `WatchDog0Base, which the soc_defines_memory patch writes -- so this
+  # counter is listed FIRST and still sees a pristine Soc.defines on a first run.
+  - anchor_ref: "soc_defines_plic_width"
+    plic_gated: true   # connect_to_plic gate (skipped when false)
+    code: "`define PLICWidth {calculated_val}"
+    skip_if_contains: "`define WatchDog0Base"
+    apply_once: true
+    type: "cluster_config"
+    target_macro: "PLICWidth"
+    increment_by_instances: true
+
+  # === bsvpath: make the watchdog package findable ===
+  - anchor_ref: "bsvpath_tcm"
+    code: "devices/watchdog/"
+    skip_if_contains: "devices/watchdog/"
+    apply_once: true
+
+  # === Soc.defines: address window ===
+  - anchor_ref: "soc_defines_memory"
+    code: |
+      {base_macro}    'h{base_addr}
+      {end_macro}     'h{end_addr}
+    skip_if_contains: "`define {base_macro}"
+    instance_aware: true
+
+  # === Soc.defines: MixedCluster_Num_Slaves (grow by #instances) ===
+  - anchor_ref: "soc_defines_num_slaves"
+    code: "`define MixedCluster_Num_Slaves {calculated_val}"
+    skip_if_contains: "`define {slave_id_macro}"
+    apply_once: true
+    type: "cluster_config"
+    target_macro: "MixedCluster_Num_Slaves"
+    increment_by_instances: true
+
+  # === Soc.defines: WD0_slave_num + MixedCluster_err_slave_num ===
+  - anchor_ref: "soc_defines_err_slave"
+    code: |
+      `define {slave_id_macro} {allocated_slot}
+      `define MixedCluster_err_slave_num {calculated_val}
+    skip_if_contains: "`define {slave_id_macro}"
+    apply_once: true
+    type: "cluster_config"
+    target_macro: "MixedCluster_err_slave_num"
+    increment_by_instances: true
+
+  # === mixed_cluster.bsv: import the watchdog package ===
+  - anchor_ref: "mixed_cluster_import"
+    code: "import watchdog :: *;"
+    skip_if_contains: "import watchdog"
+    apply_once: true
+    indent_context: "package_body"
+
+  # === mixed_cluster.bsv: (*synthesize*) wrapper ===
+  # mkwatchdog_axi4lite's Integer params are compile-time only, so they are pinned
+  # here. exposeCurrentReset (rather than a Reset module argument) keeps the AXI
+  # transactor and the watchdog core in one provable reset domain -- see header.
+  - anchor_ref: "mixed_cluster_wrapper"
+    code: |
+      (*synthesize*)
+      module mkwdt(Ifc_watchdog_axi4lite#(`paddr, `buswidth, `USERSPACE));
+        let wd_rst <- exposeCurrentReset;
+        let ifc();
+        mkwatchdog_axi4lite#(wd_rst, 0, 100) _temp(ifc);
+        return ifc;
+      endmodule
+    skip_if_contains: "module mkwdt("
+    apply_once: true
+    blank_line_before: true
+    indent_context: "package_body"
+
+  # === mixed_cluster.bsv: Ifc_mixed_cluster method declaration ===
+  # reset_out is (*always_ready, always_enabled*) on Ifc_watchdog_axi4lite, so the
+  # re-export is marked the same way to suppress the RDY_ companion port.
+  - anchor_ref: "mixed_cluster_interface_decl"
+    code: |
+      (*always_enabled,always_ready*)
+      method Bit#(1) wd{instance_id}_reset_out;
+    skip_if_contains: "method Bit#(1) wd{instance_id}_reset_out;"
+    instance_aware: true
+    indent_context: "interface_body"
+
+  # === mixed_cluster.bsv: address decoder arm ===
+  - anchor_ref: "mixed_cluster_addr_decoder"
+    code: |
+      else if(addr>= `{base_macro} && addr<= `{end_macro})
+        slave_num = `{slave_id_macro};
+    skip_if_contains: "`{base_macro}"
+    instance_aware: true
+    indent_context: "function_body"
+
+  # === mixed_cluster.bsv: instantiate the watchdog ===
+  - anchor_ref: "mixed_cluster_instantiation"
+    code: "let wd{instance_id} <- mkwdt();"
+    skip_if_contains: "let wd{instance_id} <- mkwdt"
+    instance_aware: true
+    indent_context: "module_body"
+
+  # === mixed_cluster.bsv: AXI4-Lite fabric connection ===
+  - anchor_ref: "mixed_cluster_axi_conn"
+    code: "mkConnection (fabric.v_to_slaves [`{slave_id_macro} ], wd{instance_id}.slave);"
+    skip_if_contains: "[`{slave_id_macro} ]"
+    instance_aware: true
+    indent_context: "module_body"
+
+  # === mixed_cluster.bsv: re-export reset_out ===
+  - anchor_ref: "mixed_cluster_method_impl"
+    code: "method wd{instance_id}_reset_out = wd{instance_id}.reset_out;"
+    skip_if_contains: "method wd{instance_id}_reset_out = wd{instance_id}.reset_out;"
+    instance_aware: true
+    indent_context: "module_body"
+
+  # === mixed_cluster.bsv: PLIC vector (delta-aware special handler) ===
+  # Discrete signal, like rtc/i2c/gptimer4 -- NOT a wr_external_interrupts bus bit.
+  - anchor_ref: "mixed_cluster_plic_vector"
+    plic_gated: true   # connect_to_plic gate (skipped when false)
+    code: "wd{instance_id}.interrupt,"
+    skip_if_contains: "wd{instance_id}.interrupt,"
+    instance_aware: true
+
+  # === mixed_cluster.bsv: mkplic wrapper width (synced from the handler) ===
+
+  # === Soc.bsv: chip_io method declaration ===
+  - anchor_ref: "soc_bsv_chip_io_decl"
+    code: |
+      (*always_enabled,always_ready*)
+      method Bit#(1) wd{instance_id}_reset_out;
+    skip_if_contains: "method Bit#(1) wd{instance_id}_reset_out;"
+    instance_aware: true
+    indent_context: "interface_body"
+
+  # === Soc.bsv: bind chip_io to the cluster ===
+  - anchor_ref: "soc_bsv_chip_io_bind"
+    code: "method wd{instance_id}_reset_out = mixed_cluster.wd{instance_id}_reset_out;"
+    skip_if_contains: "method wd{instance_id}_reset_out = mixed_cluster.wd{instance_id}_reset_out;"
+    instance_aware: true
+    indent_context: "module_body"
+
+  # === fpga_top.v: top-level output port ===
+  # chip_io is (*prefix=""*) in DebugSoc.bsv, so the method surfaces as the bare
+  # Verilog port wd{N}_reset_out. always_ready suppresses the RDY_ companion.
+  - anchor_ref: "fpga_top_port_decl"
+    code: "output wd{instance_id}_reset_out,"
+    skip_if_contains: "output wd{instance_id}_reset_out,"
+    instance_aware: true
+
+  # === fpga_top.v: SoC port map ===
+  - anchor_ref: "fpga_top_soc_inst"
+    code: ".wd{instance_id}_reset_out(wd{instance_id}_reset_out),"
+    skip_if_contains: ".wd{instance_id}_reset_out(wd{instance_id}_reset_out),"
+    instance_aware: true
+
+  # === constraints.xdc: dedicated output pin ===
+  - anchor_ref: "xdc_pin_assign"
+    port_name: "wd{instance_id}_reset_out"
+    target_board_pin: "{wd_reset_pin}"
+    fallback_pin: "{wd_reset_fallback}"
+    io_standard: "{wd_io_standard}"
+    skip_if_contains: "get_ports {wd{instance_id}_reset_out}"
+    instance_aware: true
+    type: "xdc_pin_assign"
+
+# =============================================================================
+# ANCHOR REFERENCE (for --pre-audit / --post-audit)
+# Run: make pre_validate_automation    (before automation)
+# Run: make post_validate_automation   (after automation)
+# =============================================================================
+#
+# PRE-AUDIT ANCHORS (must exist in a pristine tree):
+#   bsvpath:                         "^devices/tcm$"
+#   {board_dir}/Soc.defines:         "^`define GPTimer3End\s+'h0004_05FF"
+#   {board_dir}/Soc.defines:         "^`define MixedCluster_Num_Slaves \d+"
+#   {board_dir}/Soc.defines:         "^`define MixedCluster_err_slave_num \d+"
+#   {board_dir}/mixed_cluster.bsv:   "import gptimer::\*;"
+#   {board_dir}/mixed_cluster.bsv:   "(\*synthesize\*)\s*\n\s*module mkpinmuxtop.*endmodule" (multiline)
+#   {board_dir}/mixed_cluster.bsv:   "method Bit#\(2\) sb_ext_interrupt;"
+#   {board_dir}/mixed_cluster.bsv:   "slave_num = `XADC_slave_num;"
+#   {board_dir}/mixed_cluster.bsv:   "let pinmuxtop <- mkpinmuxtop\(\);"
+#   {board_dir}/mixed_cluster.bsv:   "mkConnection \(fabric\.v_to_slaves \[`Pinmux_slave_num \], pinmuxtop\.slave\);"
+#   {board_dir}/mixed_cluster.bsv:   "method I2C_out i2c1_out= i2c1\.io;"
+#   {board_dir}/mixed_cluster.bsv:   "Bit#(35) plic_inputs= {"  (width may vary)
+#   {board_dir}/mixed_cluster.bsv:   "module mkplic\(Ifc_plic_axi4lite#\(`paddr, `buswidth, `USERSPACE,\s*\d+"
+#   {board_dir}/Soc.bsv:             "interface IOCellSide iocell_io;"
+#   {board_dir}/Soc.bsv:             "interface iocell_io = mixed_cluster\.pinmuxtop_iocell_side;"
+#   {board_dir}/fpga_top.v:          "output\s+gptimer3_out\s*,"
+#   {board_dir}/fpga_top.v:          "\.gptimer3_io_timer_out\(gptimer3_out\),"
+#
+# POST-AUDIT (per instance N, here N=0):
+#   bsvpath:                         "devices/watchdog/" appended
+#   {board_dir}/Soc.defines:         WatchDog{N}Base / WatchDog{N}End defined
+#   {board_dir}/Soc.defines:         WD{N}_slave_num = {allocated_slot}; Num_Slaves and err_slave_num both +1
+#   {board_dir}/mixed_cluster.bsv:   "import watchdog :: *;"
+#   {board_dir}/mixed_cluster.bsv:   "(*synthesize*) module mkwdt(...)" wrapper added
+#   {board_dir}/mixed_cluster.bsv:   "method Bit#(1) wd{N}_reset_out;" declared
+#   {board_dir}/mixed_cluster.bsv:   decoder arm for WatchDog{N}Base..WatchDog{N}End
+#   {board_dir}/mixed_cluster.bsv:   "let wd{N} <- mkwdt();" instantiated
+#   {board_dir}/mixed_cluster.bsv:   mkConnection for `WD{N}_slave_num
+#   {board_dir}/mixed_cluster.bsv:   "method wd{N}_reset_out = wd{N}.reset_out;"
+#   {board_dir}/mixed_cluster.bsv:   wd{N}.interrupt present in plic_inputs; width +1; mkplic wrapper synced
+#   {board_dir}/Soc.bsv:             wd{N}_reset_out declared and bound to mixed_cluster
+#   {board_dir}/fpga_top.v:          "output wd{N}_reset_out," + ".wd{N}_reset_out(wd{N}_reset_out),"
+#   {xdc_file}:                      "[get_ports {wd{N}_reset_out}]"

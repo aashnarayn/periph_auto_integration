@@ -1,0 +1,54 @@
+# =============================================================================
+# TEMPLATE: sspi_v1  (add direct-connected SSPI controllers, SPI2 / SPI3)
+# =============================================================================
+# Reuses devices/spi_v2. Each instance is an mkspi slave inside spi_cluster (SPI's
+# own cluster). The interrupt travels the shared mixed_cluster interrupt concat ->
+# PLIC; `ext_int_bit` documents which bus bit it takes. If uart_v1 also grows the
+# bus, list sspi_v1 AFTER uart_v1 so the bus is widened first.
+# NOTE: there is no with_pinmux SPI -- the board's single mspi pinmux slot is owned
+# by spi1 and no free cell carries an mspi arm (see UserManual "Common pitfalls").
+# -----------------------------------------------------------------------------
+
+- name: sspi_v1                            # peripheral name; matches ip_bsv/sspi_v1
+  def_path: ip_bsv/sspi_v1/sspi_v1.yaml    # path to the IP def (sspi is dedicated-pin only)
+
+  base_context:                            # fields shared by every instance here
+    xdc_file: '{board_dir}/constraints.xdc'  # XDC file the four SPI-pin constraints are written to
+    verilog_buffer_type: IOBUF             # FPGA buffer primitive wrapping each SPI pin
+    spi_io_standard: LVCMOS12              # IO standard for the mosi/miso/nss/sclk pins
+
+  instances:                               # one entry per added SPI controller
+  - instance_id: '2'                       # SPI index -> SPI2
+    slave_id_macro: SPI2_slave_num         # Soc.defines macro receiving the allocated spi-cluster slot
+    base_macro: SPI2Base                   # address-window START macro name
+    base_addr: '0002_0200'                 # START address of the SPI register window (hex)
+    end_macro: SPI2End                     # address-window END macro name
+    end_addr: '0002_02FF'                  # END address of the window (no overlap)
+    connect_to_plic: true                  # true = interrupt -> PLIC (+1 bus/PLIC width); false = no PLIC source
+    plic_index: 40                         # PLIC source index; used for the uniqueness / conflict check
+    ext_int_bit: 14                        # which interrupt-BUS bit this SPI occupies (documents the routing)
+    mosi_pin: fmc_la_p[02]                 # board pin for MOSI (master out / slave in)
+    miso_pin: fmc_la_n[02]                 # board pin for MISO (master in / slave out)
+    nss_pin:  fmc_la_p[03]                 # board pin for NSS / chip-select
+    sclk_pin: fmc_la_n[03]                 # board pin for SCLK (serial clock)
+    mosi_fallback: fmc_la_p[31]            # pin used to route the port originally routed to mosi_pin, now used by this inst
+    miso_fallback: fmc_la_n[31]            # pin used to route the port originally routed to miso_pin, now used by this inst
+    nss_fallback:  fmc_la_p[32]            # pin used to route the port originally routed to nss_pin, now used by this inst
+    sclk_fallback: fmc_la_n[32]            # pin used to route the port originally routed to sclk_pin, now used by this inst
+  # - instance_id: '3'                     # add SPI3 the same way (own window + pins + unique plic_index/ext_int_bit):
+  #   slave_id_macro: SPI3_slave_num
+  #   base_macro: SPI3Base
+  #   base_addr: '0002_0300'
+  #   end_macro: SPI3End
+  #   end_addr: '0002_03FF'
+  #   connect_to_plic: true
+  #   plic_index: 41
+  #   ext_int_bit: 15
+  #   mosi_pin: fmc_la_p[04]
+  #   miso_pin: fmc_la_n[04]
+  #   nss_pin:  fmc_la_p[05]
+  #   sclk_pin: fmc_la_n[05]
+  #   mosi_fallback: fmc_la_p[33]
+  #   miso_fallback: fmc_la_n[33]
+  #   nss_fallback:  fmc_la17_cc_p
+  #   sclk_fallback: fmc_la18_cc_p

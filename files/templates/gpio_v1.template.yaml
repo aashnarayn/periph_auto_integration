@@ -1,0 +1,24 @@
+# =============================================================================
+# TEMPLATE: gpio_v1  (extend on-chip GPIO width; add dedicated GPIO lines)
+# =============================================================================
+# Reuses devices/gpio_v2. Does a ONE-TIME width bump GPIO#(32)->GPIO#({gpio_width});
+# each instance is one new GPIO line brought out to a dedicated FPGA pin. No PLIC.
+# (This merged the old gpio_v1 (width 48) and gpio_v1_36 (width 36) -- the width is
+# now just the `gpio_width` parameter, so ONE def covers every case.)
+# -----------------------------------------------------------------------------
+
+- name: gpio_v1                            # peripheral name; matches ip_bsv/gpio_v1
+  def_path: ip_bsv/gpio_v1/gpio_v1.yaml    # path to the IP def (gpio has no modes)
+
+  base_context:                            # fields shared by every instance here
+    xdc_file: '{board_dir}/constraints.xdc'  # XDC file the pin constraints are written to
+    gpio_io_standard: LVCMOS12             # IO standard for the new GPIO pins (bank voltage dependent)
+    gpio_width: 48                         # TOTAL on-chip GPIO width AFTER this integration (e.g. 48 or 36)
+
+  instances:                               # one entry per NEW gpio line; instance_id = the GPIO index
+  - instance_id: '32'                      # -> gpio_32 (first new line; base SoC already has 0..31)
+    gpio_pin: fmc_la_n[16]                 # board pin this GPIO line is routed to
+    gpio_fallback: fmc_la_n[26]            # pin used to route the port originally routed to gpio_pin, now used by this instance
+  # - instance_id: '33'                    # add each additional line the same way, up to gpio_width-1
+  #   gpio_pin: fmc_la_p[16]               # ... its board pin
+  #   gpio_fallback: fmc_la_p[26]          # ... its fallback pin

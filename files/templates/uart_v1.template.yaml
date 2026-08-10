@@ -1,0 +1,50 @@
+# =============================================================================
+# TEMPLATE: uart_v1  (adds UART3.. through the pinmux OR on dedicated pins)
+# =============================================================================
+# Reuses devices/uart_v2 RTL (no shipped .bsv). The interrupt travels the shared
+# mixed_cluster interrupt concat -> PLIC. UNIFIED DUAL-MODE def.
+#
+# MODES:
+#   with_pinmux    = routed via the pinmux cell12/13 (the single designated pinmux UART)
+#   without_pinmux = dedicated FPGA RX/TX pins (default)
+#   Only ONE PLIC-routed added UART is supported; give any extra UART
+#   connect_to_plic: false (its AXI + pins work, only its interrupt is left unrouted).
+# -----------------------------------------------------------------------------
+
+- name: uart_v1                            # peripheral name; matches ip_bsv/uart_v1 + registry
+  modes:                                   # unified def -> declare both modes (both = same file)
+    with_pinmux:    ip_bsv/uart_v1/uart_v1.yaml   # def used when uart_mode: with_pinmux
+    without_pinmux: ip_bsv/uart_v1/uart_v1.yaml   # def used when uart_mode: without_pinmux
+  # def_path: ip_bsv/uart_v1/uart_v1.yaml  # alt form: no per-instance mode -> default (without_pinmux)
+
+  base_context:                            # fields shared by every instance here
+    xdc_file: '{board_dir}/constraints.xdc'  # XDC file that pin patches are written to
+
+  instances:                               # one entry per added UART (UART3, UART4, ...)
+  - instance_id: '3'                       # UART index -> UART3 (also names the io interface uart3_io)
+    uart_mode: without_pinmux              # with_pinmux | without_pinmux (OMIT with the def_path form)
+    connect_to_plic: true                  # true = interrupt -> PLIC (+1 bus/PLIC width); false = interrupt unrouted
+    slave_id_macro: UART3_slave_num        # Soc.defines macro receiving the allocated UART-cluster slot
+    base_macro: UART3Base                  # address-window START macro name
+    base_addr: '0001_1600'                 # START address of the UART register window (hex)
+    end_macro: UART3End                    # address-window END macro name
+    end_addr: '0001_1640'                  # END address of the window
+    # --- the four pin fields below are used ONLY in without_pinmux mode ---
+    uart_rx_pin: fmc_la_p[07]              # board pin for RX (serial in)
+    uart_tx_pin: fmc_la_n[07]              # board pin for TX (serial out)
+    uart_rx_fallback: fmc_la_p[08]         # pin used to route the port originally routed to uart_rx_pin, now used by this inst
+    uart_tx_fallback: fmc_la_n[08]         # pin used to route the port originally routed to uart_tx_pin, now used by this inst
+    uart_io_standard: LVCMOS33             # IO standard for the RX/TX pins (bank voltage dependent)
+  # - instance_id: '4'                     # a SECOND UART on dedicated pins, interrupt NOT routed:
+  #   uart_mode: without_pinmux
+  #   connect_to_plic: false               # only one added UART may own a PLIC source (UART3 above)
+  #   slave_id_macro: UART4_slave_num
+  #   base_macro: UART4Base
+  #   base_addr: '0001_1700'
+  #   end_macro: UART4End
+  #   end_addr: '0001_1740'
+  #   uart_rx_pin: fmc_la_p[07]
+  #   uart_tx_pin: fmc_la_n[07]
+  #   uart_rx_fallback: fmc_la_p[08]
+  #   uart_tx_fallback: fmc_la_n[08]
+  #   uart_io_standard: LVCMOS33

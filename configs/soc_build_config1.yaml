@@ -1,0 +1,320 @@
+# Centralized config file for Peripheral Automation
+# Add new peripherals to the `automated_peripherals` list without modifying Python code.
+# Location: gc2025/hw/soc_build_config.yaml
+
+target_board: nexys_video
+board_dir: boards/nexys_video
+pin_map_path: boards/nexys_video/pin_map.yaml
+
+# Seed def applied by `make bootstrap_board` (and automatically before pre-audit
+# and integration). It injects the automation anchors a fresh `git clone` lacks
+# so the flow works with zero manual editing. Board-specific: point at the seed
+# def for whatever `target_board` is active.
+
+automated_peripherals:
+- name: rtc_v1
+  def_path: ip_bsv/rtc_v1/rtc_v1.yaml
+  base_context:
+    xdc_file: '{board_dir}/constraints.xdc'
+    verilog_buffer_type: IOBUF
+    verilog_buffer_tristate: 1'b0
+  instances:
+  - instance_id: '0'
+    slave_id_macro: RTC0_slave_num
+    base_macro: RTC0Base
+    base_addr: '0004_0600'
+    end_macro: RTC0End
+    end_addr: '0004_06FF'
+    connect_to_plic: true
+    plic_index: 35
+    rtc_io_port_name: rtc0_io_rtc_clock_signal
+    pin_hint: ja[10]
+    fallback_pin: fmc_la_n[06]
+  - instance_id: '1'
+    slave_id_macro: RTC1_slave_num
+    base_macro: RTC1Base
+    base_addr: '0004_0700'
+    end_macro: RTC1End
+    end_addr: '0004_07FF'
+    connect_to_plic: true
+    plic_index: 34
+    rtc_io_port_name: rtc1_io_rtc_clock_signal
+    pin_hint: ja[4]
+    fallback_pin: fmc_la_p[06]
+
+- name: uart_v1
+  # Unified UART def (one file, both routing modes). The routing mode is chosen
+  # PER-INSTANCE via `uart_mode` below; the framework applies the mode's patches
+  # and skips the other mode's (both `modes` keys point at the same file).
+  #   with_pinmux    -> UART routed through the pinmux cell mux (shares muxed pins)
+  #   without_pinmux -> UART wired to dedicated FMC pins
+  # Switching modes requires a restore + re-apply (see UserManual §13).
+  modes:
+    with_pinmux:    ip_bsv/uart_v1/uart_v1.yaml
+    without_pinmux: ip_bsv/uart_v1/uart_v1.yaml
+  base_context:
+      xdc_file: '{board_dir}/constraints.xdc'
+  instances:
+      - instance_id: '3'
+        uart_mode: with_pinmux        # <- select the routing mode here
+        connect_to_plic: true         # PLIC-routed (interrupt on the ext bus)
+        slave_id_macro: UART3_slave_num
+        base_macro: UART3Base
+        base_addr: '0001_1600'
+        end_macro: UART3End
+        end_addr: '0001_1640'
+
+- name: gpio_v1
+  # Extend on-chip GPIO 32 -> 48 and pin the 16 new lines (gpio_32..gpio_47)
+  # to the free FMC-LA bank. Instances are listed ASCENDING (32 -> 47), matching
+  # the existing gpio_15..31 style; the one MSB-first spot (gpio_in_combined)
+  # uses reverse_instances in the IP yaml to stay bit-aligned.
+  def_path: ip_bsv/gpio_v1/gpio_v1.yaml
+  base_context:
+    xdc_file: '{board_dir}/constraints.xdc'
+    gpio_io_standard: LVCMOS12        # matches existing FMC GPIOs (gpio_29/30/31)
+    gpio_width: 48
+  instances:
+  - instance_id: '32'
+    gpio_pin: fmc_la_n[16]
+    gpio_fallback: fmc_la_n[26]
+  - instance_id: '33'
+    gpio_pin: fmc_la_p[16]
+    gpio_fallback: fmc_la_p[26]
+  - instance_id: '34'
+    gpio_pin: fmc_la_n[15]
+    gpio_fallback: fmc_la_n[25]
+  - instance_id: '35'
+    gpio_pin: fmc_la_p[15]
+    gpio_fallback: fmc_la_p[25]
+  - instance_id: '36'
+    gpio_pin: fmc_la_n[14]
+    gpio_fallback: fmc_la_n[24]
+  - instance_id: '37'
+    gpio_pin: fmc_la_p[14]
+    gpio_fallback: fmc_la_p[24]
+  - instance_id: '38'
+    gpio_pin: fmc_la_n[13]
+    gpio_fallback: fmc_la_n[23]
+  - instance_id: '39'
+    gpio_pin: fmc_la_p[13]
+    gpio_fallback: fmc_la_p[23]
+  - instance_id: '40'
+    gpio_pin: fmc_la_n[12]
+    gpio_fallback: fmc_la_n[22]
+  - instance_id: '41'
+    gpio_pin: fmc_la_p[12]
+    gpio_fallback: fmc_la_p[22]
+  - instance_id: '42'
+    gpio_pin: fmc_la_n[11]
+    gpio_fallback: fmc_la_n[21]
+  - instance_id: '43'
+    gpio_pin: fmc_la_p[11]
+    gpio_fallback: fmc_la_p[21]
+  - instance_id: '44'
+    gpio_pin: fmc_la_n[10]
+    gpio_fallback: fmc_la_n[20]
+  - instance_id: '45'
+    gpio_pin: fmc_la_p[10]
+    gpio_fallback: fmc_la_p[20]
+  - instance_id: '46'
+    gpio_pin: fmc_la_n[09]
+    gpio_fallback: fmc_la_n[19]
+  - instance_id: '47'
+    gpio_pin: fmc_la_p[09]
+    gpio_fallback: fmc_la_p[19]
+
+- name: i2c_v1
+  # Two ADDITIONAL direct-routed I2C controllers (I2C2, I2C3) beside the
+  # baseline I2C0/I2C1. Mixed-cluster slots are auto-allocated from the current
+  # err-slot (see `allocated_slot`), so i2c_v1 is INDEPENDENT of rtc: standalone
+  # it takes slots 10/11; after rtc (which took 10/11) it takes 12/13. No fixed
+  # slave numbers, no ordering requirement.
+  def_path: ip_bsv/i2c_v1/i2c_v1.yaml
+  base_context:
+    xdc_file: '{board_dir}/constraints.xdc'
+    io_standard: LVCMOS12          # FMC-LA bank, like i2c1 / gpio_29-31
+  instances:
+  - instance_id: '2'
+    slave_id_macro: I2C2_slave_num
+    base_macro: I2C2Base
+    base_addr: '0004_1600'
+    end_macro: I2C2End
+    end_addr: '0004_16FF'
+    connect_to_plic: true
+    plic_index: 38
+    sda_pin: fmc_la_p[27]
+    scl_pin: fmc_la_n[27]
+    sda_fallback: fmc_la_p[29]
+    scl_fallback: fmc_la_n[29]
+  - instance_id: '3'
+    slave_id_macro: I2C3_slave_num
+    base_macro: I2C3Base
+    base_addr: '0004_1700'
+    end_macro: I2C3End
+    end_addr: '0004_17FF'
+    connect_to_plic: true
+    plic_index: 39
+    sda_pin: fmc_la_p[28]
+    scl_pin: fmc_la_n[28]
+    sda_fallback: fmc_la_p[30]
+    scl_fallback: fmc_la_n[30]
+
+- name: gptimer_v1
+  # One ADDITIONAL direct-connected general-purpose timer (gptimer4) beside the
+  # four existing timers gptimer0..gptimer3. Its in/out lines are plain top-level
+  # ports wired straight to the SoC — no pinmux, and no IOBUF either, since
+  # gptimer0..3 are already declared as a plain input/output pair rather than as
+  # bidirectional pads.
+  #
+  # ORDER-INDEPENDENT. The mixed-cluster slave slot is auto-allocated from the
+  # current err-slot (see `allocated_slot`), and gptimer4.sb_interrupt is a
+  # DISCRETE PLIC signal (like rtc/i2c), not a bit of the shared
+  # wr_external_interrupts bus — so it never touches the Bit#(13) interrupt-method
+  # width and carries no `ext_int_bit`. Standalone it takes slot 10; listed after
+  # rtc_v1 + i2c_v1 it takes 14. It may appear anywhere in this list.
+  # No new BSV source and no bsvpath entry: devices/gptimer/ and the
+  # `(*synthesize*) module mkgptimer` wrapper already exist for gptimer0..3.
+  def_path: ip_bsv/gptimer_v1/gptimer_v1.yaml
+  base_context:
+    xdc_file: '{board_dir}/constraints.xdc'
+    gptimer_io_standard: LVCMOS12     # FMC-LA VADJ bank at 1.2V, like gptimer2/gptimer3
+  instances:
+  - instance_id: '4'
+    slave_id_macro: GPTimer4_slave_num
+    base_macro: GPTimer4Base
+    base_addr: '0004_0800'            # first free window above GPTimer3End (0004_05FF)
+    end_macro: GPTimer4End
+    end_addr: '0004_08FF'
+    connect_to_plic: true
+    plic_index: 42                    # next free index after spi3=41
+    # The only two FMC-LA pins claimed by no other peripheral as primary OR
+    # fallback, so these never trigger the analyzer's conflict path.
+    gptimer_in_pin: fmc_la17_cc_n
+    gptimer_out_pin: fmc_la18_cc_n
+    gptimer_in_fallback: fmc_la_n[06]
+    gptimer_out_fallback: fmc_la_n[08]
+
+- name: watchdog_v1
+  # One direct-connected watchdog timer (wd0). The IP already exists at
+  # devices/watchdog/watchdog.bsv but was wired into nothing; this def adds the
+  # bsvpath entry, the `import watchdog`, a (*synthesize*) mkwdt wrapper, an
+  # address window, a cluster slave slot, a discrete PLIC interrupt, and exports
+  # reset_out to one dedicated pin (plain output, no pinmux, no IOBUF).
+  #
+  # reset_out goes ONLY to an observation pin -- it is NOT fed back into the SoC
+  # reset tree (see the IP def header). Software uses the PLIC interrupt.
+  # wd_control=0 (disabled at power-on) and reset_cycles=100 are baked into the
+  # mkwdt wrapper; both stay runtime-writable at offsets 0x8 / 0x10.
+  #
+  # ORDER-INDEPENDENT. The mixed-cluster slave slot is auto-allocated from the
+  # current err-slot (see `allocated_slot`), and wd0.interrupt is a DISCRETE PLIC
+  # signal (like rtc/i2c/gptimer4), not a bit of the shared wr_external_interrupts
+  # bus -- so it never touches the Bit#(13) interrupt-method width and carries no
+  # `ext_int_bit`. It may appear anywhere in this list.
+  def_path: ip_bsv/watchdog_v1/watchdog_v1.yaml
+  base_context:
+    xdc_file: '{board_dir}/constraints.xdc'
+    wd_io_standard: LVCMOS12          # FMC-LA VADJ bank at 1.2V, like gptimer2/3
+  instances:
+  - instance_id: '0'
+    slave_id_macro: WD0_slave_num
+    base_macro: WatchDog0Base
+    base_addr: '0004_0900'            # first free window above GPTimer4End (0004_08FF)
+    end_macro: WatchDog0End
+    end_addr: '0004_09FF'
+    connect_to_plic: true
+    plic_index: 43                    # next free index after gptimer4=42
+    # Every FMC-LA pin is now some peripheral's primary or fallback. fmc_la_n[19]
+    # is only ever gpio_46's fallback, and gpio_46's primary (fmc_la_n[09]) is
+    # always free -- so that fallback can never fire and the pin stays ours.
+    wd_reset_pin: fmc_la_n[19]
+    wd_reset_fallback: fmc_la_n[20]
+
+- name: sspi_v1
+  # Two ADDITIONAL direct-connected SSPI controllers (SPI2, SPI3) beside the
+  # baseline SPI0/SPI1 of the SPI cluster. Each SPI's mosi/miso/nss/sclk go
+  # straight to dedicated FMC-LA pins via IOBUFs (like spi0) — NOT through the
+  # pinmux. SPI-cluster slave slots are auto-allocated from the current err-slot
+  # (see `allocated_slot`), so numbering is order-independent within the cluster.
+  #
+  # Interrupts route through the SHARED mixed_cluster interrupt bus (see the IP
+  # def header): spi{N}_sb_interrupt is prepended at the MSB of the Soc.bsv
+  # interrupt concat, so spi2 -> wr_external_interrupts[14], spi3 -> [15]. Keep
+  # sspi_v1 listed AFTER rtc_v1 so `plic_width` + the Bit#(14) bus baseline exist
+  # first. `ext_int_bit` encodes each instance's bus bit for the PLIC vector.
+  def_path: ip_bsv/sspi_v1/sspi_v1.yaml
+  base_context:
+    xdc_file: '{board_dir}/constraints.xdc'
+    verilog_buffer_type: IOBUF
+    spi_io_standard: LVCMOS12         # FMC-LA bank runs at 1.2V (VADJ), like i2c/gpio_29-31
+  instances:
+  - instance_id: '2'
+    slave_id_macro: SPI2_slave_num
+    base_macro: SPI2Base
+    base_addr: '0002_0200'
+    end_macro: SPI2End
+    end_addr: '0002_02FF'
+    connect_to_plic: true
+    plic_index: 40                    # next free index after i2c3=39
+    ext_int_bit: 14                   # wr_external_interrupts bit for SPI2
+    mosi_pin: fmc_la_p[02]
+    miso_pin: fmc_la_n[02]
+    nss_pin: fmc_la_p[03]
+    sclk_pin: fmc_la_n[03]
+    mosi_fallback: fmc_la_p[31]
+    miso_fallback: fmc_la_n[31]
+    nss_fallback: fmc_la_p[32]
+    sclk_fallback: fmc_la_n[32]
+  - instance_id: '3'
+    slave_id_macro: SPI3_slave_num
+    base_macro: SPI3Base
+    base_addr: '0002_0300'
+    end_macro: SPI3End
+    end_addr: '0002_03FF'
+    connect_to_plic: true
+    plic_index: 41
+    ext_int_bit: 15                   # wr_external_interrupts bit for SPI3
+    mosi_pin: fmc_la_p[04]
+    miso_pin: fmc_la_n[04]
+    nss_pin: fmc_la_p[05]
+    sclk_pin: fmc_la_n[05]
+    mosi_fallback: fmc_la_p[33]
+    miso_fallback: fmc_la_n[33]
+    nss_fallback: fmc_la17_cc_p
+    sclk_fallback: fmc_la18_cc_p
+
+- name: pwm_v1
+  # Four ADDITIONAL direct-connected PWM channels (pwm6..pwm9) beside the six
+  # pinmuxed channels pwm0..pwm5. Implemented by widening the single mkpwm slave
+  # in pwm_cluster.bsv from 6 to 10 channels; the new outputs go straight to
+  # dedicated FMC pins via IOBUFs (like rtc0/rtc1), NOT through the pinmux.
+  #
+  # FULLY INDEPENDENT — no PLIC, no interrupt-bus width, no cluster slave slot,
+  # and no Soc.defines change (channels 0..9 all fit the existing PWM0Base..End
+  # window, each at offset i*16). It may be listed anywhere in this file, with or
+  # without any other peripheral. See the IP def header for the full argument.
+  def_path: ip_bsv/pwm_v1/pwm_v1.yaml
+  base_context:
+    xdc_file: '{board_dir}/constraints.xdc'
+    verilog_buffer_type: IOBUF
+    verilog_buffer_tristate: 1'b0     # IOBUF held in permanent output mode
+    pwm_total_channels: 10            # 6 existing (pinmuxed) + 4 new (direct)
+    pwm_direct_channels: 4            # marker macro + idempotency guard (see IP def)
+    pwm_io_standard: LVCMOS12         # FMC-LA bank runs at 1.2V (VADJ)
+  instances:
+  # instance_id doubles as the PWM channel index: pwm6_io -> pwm_o[6].
+  # Primaries are the free FMC-LA clock-capable pins; they are claimed by no
+  # other peripheral and are not anyone else's fallback.
+  - instance_id: '6'
+    pwm_pin: fmc_la00_cc_p
+    pwm_fallback: fmc_la_p[21]
+  - instance_id: '7'
+    pwm_pin: fmc_la00_cc_n
+    pwm_fallback: fmc_la_n[21]
+  - instance_id: '8'
+    pwm_pin: fmc_la01_cc_p
+    pwm_fallback: fmc_la_p[22]
+  - instance_id: '9'
+    pwm_pin: fmc_la01_cc_n
+    pwm_fallback: fmc_la_n[22]

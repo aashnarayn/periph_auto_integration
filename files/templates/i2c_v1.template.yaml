@@ -1,0 +1,41 @@
+# =============================================================================
+# TEMPLATE: i2c_v1  (add direct-routed I2C controllers, e.g. I2C2 / I2C3)
+# =============================================================================
+# Reuses devices/i2c. Each instance is an mki2c slave inside the mixed_cluster.
+# Its interrupt is a DISCRETE PLIC source (the controller's `.isint` signal).
+# NOTE: the baseline address map only defines I2C0..I2C3, so at most I2C2 + I2C3
+# can be added (a further one would need a new baseline window).
+# -----------------------------------------------------------------------------
+
+- name: i2c_v1                             # peripheral name; matches ip_bsv/i2c_v1
+  def_path: ip_bsv/i2c_v1/i2c_v1.yaml      # path to the IP def (i2c has no modes)
+
+  base_context:                            # fields shared by every instance here
+    xdc_file: '{board_dir}/constraints.xdc'  # XDC file the SDA/SCL constraints are written to
+    io_standard: LVCMOS12                  # IO standard for the SDA/SCL pins
+
+  instances:                               # one entry per added I2C controller
+  - instance_id: '2'                       # I2C index -> I2C2
+    slave_id_macro: I2C2_slave_num         # Soc.defines macro receiving the allocated mixed-cluster slot
+    base_macro: I2C2Base                   # address-window START macro name
+    base_addr: '0004_1600'                 # START address of the I2C register window (hex)
+    end_macro: I2C2End                     # address-window END macro name
+    end_addr: '0004_16FF'                  # END address of the window (no overlap)
+    connect_to_plic: true                  # true = interrupt -> PLIC (+1 PLICWidth); false = no PLIC source
+    plic_index: 38                         # PLIC source index; used for the uniqueness / conflict check
+    sda_pin: fmc_la_p[27]                  # board pin for the I2C data line (SDA)
+    scl_pin: fmc_la_n[27]                  # board pin for the I2C clock line (SCL)
+    sda_fallback: fmc_la_p[29]             # pin used to route the port originally routed to sda_pin, now used by this inst
+    scl_fallback: fmc_la_n[29]             # pin used to route the port originally routed to scl_pin, now used by this inst
+  # - instance_id: '3'                     # add I2C3 the same way with its own window + pins:
+  #   slave_id_macro: I2C3_slave_num
+  #   base_macro: I2C3Base
+  #   base_addr: '0004_1700'
+  #   end_macro: I2C3End
+  #   end_addr: '0004_17FF'
+  #   connect_to_plic: true
+  #   plic_index: 39                       # must be unique across all peripherals
+  #   sda_pin: fmc_la_p[28]
+  #   scl_pin: fmc_la_n[28]
+  #   sda_fallback: fmc_la_p[30]
+  #   scl_fallback: fmc_la_n[30]

@@ -1,0 +1,26 @@
+# =============================================================================
+# TEMPLATE: watchdog_v1  (add a direct-connected watchdog timer, wd0)
+# =============================================================================
+# Reuses devices/watchdog (the def appends it to bsvpath -- it is NOT on the base
+# bsvpath). Instantiated as a mixed_cluster slave with a DISCRETE PLIC source and
+# a single reset-out pin (the watchdog asserts this on timeout).
+# -----------------------------------------------------------------------------
+
+- name: watchdog_v1                        # peripheral name; matches ip_bsv/watchdog_v1
+  def_path: ip_bsv/watchdog_v1/watchdog_v1.yaml  # path to the IP def (watchdog has no modes)
+
+  base_context:                            # fields shared by every instance here
+    xdc_file: '{board_dir}/constraints.xdc'  # XDC file the reset-pin constraint is written to
+    wd_io_standard: LVCMOS12               # IO standard for the reset-out pin
+
+  instances:                               # one entry per added watchdog
+  - instance_id: '0'                       # watchdog index -> wd0
+    slave_id_macro: WD0_slave_num          # Soc.defines macro receiving the allocated mixed-cluster slot
+    base_macro: WatchDog0Base              # address-window START macro name
+    base_addr: '0004_0900'                 # START address of the watchdog register window (hex)
+    end_macro: WatchDog0End                # address-window END macro name
+    end_addr: '0004_09FF'                  # END address of the window (no overlap)
+    connect_to_plic: true                  # true = interrupt -> PLIC (+1 PLICWidth); false = no PLIC source
+    plic_index: 43                         # PLIC source index; used for the uniqueness / conflict check
+    wd_reset_pin: fmc_la_n[19]             # board pin the watchdog reset-out is routed to
+    wd_reset_fallback: fmc_la_n[20]        # pin used to route the port originally routed to wd_reset_pin, now used by this inst

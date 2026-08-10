@@ -1,0 +1,23 @@
+// Allocated space: 56 bytes
+// space allocation: (R: reserved, U: Used)
+
+// 0x00 = R R R R U U R U  (RTC_CTRL_ADDR)
+// 0x08 = R R R R U U U U  (RTC_TIME_READ_ADDR)
+// 0x10 = R R R R U U U U  (RTC_TIME_WRITE_HIGH)       
+// 0x18 = R R R R R R U U  (RTC_EPOCH_READ_ADDR) 
+// 0x20 = R R R R R R U U  (RTC_EPOCH_WRITE_ADDR)        
+// 0x28 = R R R R U U U U  (RTC_ALARM_ADDR)   
+// 0x30 = R R R R U U U U  (RTC_ALARM_READ)
+
+
+// Memory Map
+
+`define RTC_CTRL_ADDR          8'h00  // 32 bits used
+`define RTC_TIME_READ_ADDR     8'h08  // 32 bits used    
+`define RTC_TIME_WRITE_ADDR    8'h10  // 32 bits used
+`define RTC_EPOCH_READ_ADDR    8'h18  // 16 bits used
+`define RTC_EPOCH_WRITE_ADDR   8'h20  // 16 bits used
+`define RTC_ALARM_ADDR         8'h28  // 32 bits used
+`define RTC_ALARM_READ         8'h30  // 32 bits used 
+
+// NOTE: RTC_ALARM_READ can be removed if not using alarm value readback in rtc_v1.bsv

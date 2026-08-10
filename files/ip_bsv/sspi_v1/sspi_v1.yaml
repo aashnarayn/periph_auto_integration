@@ -1,0 +1,396 @@
+name: "sspi_v1"
+yaml_version: "2.0"
+description: >
+  Add two more direct-connected SSPI controllers (SPI2, SPI3) alongside the
+  baseline SPI0/SPI1 of the SPI cluster. Each new instance mirrors the existing
+  spi0/spi1 wiring: an mkspi slave in spi_cluster.bsv (address decoder arm, AXI
+  connection, Ifc_sspi_io interface, sideband interrupt method), a chip_io
+  Ifc_sspi_io interface in Soc.bsv, and dedicated mosi/miso/nss/sclk pins in
+  fpga_top.v (ports, SoC port maps, IOBUFs) constrained in the XDC. "Direct
+  connection" = the four SPI lines go straight to dedicated FPGA pins via IOBUFs
+  (like spi0), NOT through the pinmux (spi1's mspi path is left untouched).
+
+  INTERRUPT ROUTING (important — differs from i2c):
+  SPI lives in its own spi_cluster, so its sideband interrupt does NOT sit in the
+  mixed_cluster scope like i2c's discrete `.isint`. Instead each spi{N}_sb_interrupt
+  travels through the shared `mixed_cluster.interrupts(...)` concat in Soc.bsv into
+  `wr_external_interrupts`, and from there into `plic_inputs`. The new instances are
+  PREPENDED at the MSB of that concat so every existing bit position (0..13) — and
+  therefore every existing `plic_inputs` reference (`wr_external_interrupts[13]`,
+  `[12:6]`, `[5:0]`) — is preserved unchanged. spi2 -> new bit 14, spi3 -> new bit 15.
+  The interrupt bus is widened Bit#(14) -> Bit#(16) and the mkplic width is synced,
+  the same width-agnostic way rtc_v1/i2c_v1 grow the PLIC vector.
+
+  ORDERING / COUPLING: list sspi_v1 AFTER rtc_v1 in soc_build_config.yaml so the
+  `plic_width` shared state and the committed Bit#(14) interrupt-bus baseline are
+  established first (same rule i2c_v1 documents). `ext_int_bit` (14/15) assumes that
+  Bit#(14) baseline. This peripheral co-owns the interrupt-bus width with the
+  uart3 `without_pinmux` mode; do not enable both on overlapping bus bits.
+
+anchors:
+  # ---- Soc.defines: SPI-cluster slave-count counters + slave num + addresses ----
+  soc_defines_num_slaves:
+    file: "{board_dir}/Soc.defines"
+    pattern: '^`define\s+SPICluster_Num_Slaves\s+\d+'
+    position: "replace"
+
+  soc_defines_err_slave:
+    file: "{board_dir}/Soc.defines"
+    pattern: '^`define\s+SPICluster_err_slave_num\s+\d+'
+    position: "replace"
+
+  soc_defines_memory:
+    file: "{board_dir}/Soc.defines"
+    pattern: "^`define SPI1End\\s+'h0002_01FF"
+    position: "after"
+
+  # Widen the outer slow-fabric SPI window so SPI2/SPI3 addresses are routed into
+  # the SPI cluster instead of the top-level error slave.
+  soc_defines_cluster_end:
+    file: "{board_dir}/Soc.defines"
+    pattern: "^`define\\s+SPIClusterEnd\\s+'h0002_01FF"
+    position: "replace"
+
+  # ---- spi_cluster.bsv ----
+  spi_cluster_interface_decl:
+    file: "{board_dir}/spi_cluster.bsv"
+    pattern: 'interface Ifc_sspi_io spi1_io;'
+    position: "after"
+
+  spi_cluster_interrupt_decl:
+    file: "{board_dir}/spi_cluster.bsv"
+    pattern: 'method Bit#\(1\) spi1_sb_interrupt;'
+    position: "after"
+
+  spi_cluster_instantiation:
+    file: "{board_dir}/spi_cluster.bsv"
+    pattern: 'let spi1 <- mkspi\(\);'
+    position: "after"
+
+  spi_cluster_addr_decoder:
+    file: "{board_dir}/spi_cluster.bsv"
+    pattern: 'slave_num =\s+`SPI1_slave_num;'
+    position: "after"
+
+  spi_cluster_axi_conn:
+    file: "{board_dir}/spi_cluster.bsv"
+    pattern: 'mkConnection \(fabric\.v_to_slaves \[`SPI1_slave_num \],spi1\.slave\);'
+    position: "after"
+
+  spi_cluster_interface_wire:
+    file: "{board_dir}/spi_cluster.bsv"
+    pattern: 'interface spi1_io=spi1\.io;'
+    position: "after"
+
+  spi_cluster_interrupt_wire:
+    file: "{board_dir}/spi_cluster.bsv"
+    pattern: 'method spi1_sb_interrupt = spi1\.sb_sspi_interrupt;'
+    position: "after"
+
+  # ---- Soc.bsv: chip_io Ifc_sspi_io (decl + binding) + interrupt concat ----
+  soc_bsv_chip_io_decl:
+    file: "{board_dir}/Soc.bsv"
+    # Anchored on the COMMENTED spi1 line, not on spi0: spi1 is pinmux-routed and
+    # deliberately has no chip_io port, but it still occupies its slot in the
+    # reading order. Injecting after spi0 would have put spi2/spi3 ABOVE spi1.
+    pattern: '^//    interface Ifc_sspi_io spi1_io;'
+    position: "after"
+
+  soc_bsv_chip_io_bind:
+    file: "{board_dir}/Soc.bsv"
+    pattern: '^//    interface spi1_io = spi_cluster\.spi1_io;'
+    position: "after"
+
+  # ---- Soc.bsv: interrupt concat -- INSERT spi3/spi2 above spi1 (MSB end) ----
+  # Anchored on spi1's own line (one signal per line since the Section 21
+  # refactor). This def USED TO `replace` the whole interrupts({...}) statement
+  # with a hardcoded 12-signal block, which (a) clobbered pwm6..9's lines if
+  # pwm_v1 ran first, and (b) hardcoded Bit#(14), making sspi silently
+  # REQUIRE uart_v1. Inserting at a stable anchor fixes both.
+  soc_bsv_interrupt_concat:
+    file: "{board_dir}/Soc.bsv"
+    pattern: '^\s*spi_cluster\.spi1_sb_interrupt,'
+    position: "before"
+
+  # ---- Soc.defines: derived interrupt-bus / PLIC sizing (UserManual Section 21) ----
+  # SPI2+SPI3 add two bits at the MSB of the bus. The width is derived from
+  # `ExtIntWidth, so the old Bit#(14) -> Bit#(16) literal rewrites are gone --
+  # and with them sspi_v1's hidden dependency on uart_v1 having run first.
+  soc_defines_extint_width:
+    file: "{board_dir}/Soc.defines"
+    pattern: '^`define\s+ExtIntWidth\s+\d+'
+    position: "replace"
+
+  soc_defines_extint_msb:
+    file: "{board_dir}/Soc.defines"
+    pattern: '^`define\s+ExtIntMsb\s+\d+'
+    position: "replace"
+
+  soc_defines_plic_width:
+    file: "{board_dir}/Soc.defines"
+    pattern: '^`define\s+PLICWidth\s+\d+'
+    position: "replace"
+
+  # ---- fpga_top.v: dedicated pins per instance, mirroring spi0 ----
+  fpga_top_port_decl:
+    file: "{board_dir}/fpga_top.v"
+    pattern: 'inout\s+spi0_sclk,'
+    position: "after"
+
+  fpga_top_soc_inst:
+    file: "{board_dir}/fpga_top.v"
+    pattern: '\.spi0_io_miso_in_val\(spi0_io_miso_in_val\),'
+    position: "after"
+
+  fpga_top_iobuf:
+    file: "{board_dir}/fpga_top.v"
+    pattern: 'IOBUF spi0_inst_sclk\([\s\S]*?\);'
+    position: "after"
+    multiline: true
+
+  # ---- TbSoc.bsv: tie off the now-real chip_io.spi{N}_io in simulation ----
+  tbsoc_spi_tieoff:
+    file: "{board_dir}/TbSoc.bsv"
+    pattern: "soc\\.chip_io\\.spi0_io\\.sclk_in\\(1'b1\\);"
+    position: "after"
+
+  # ---- constraints.xdc ----
+  xdc_pin_assign:
+    type: "xdc_pin_assign"
+    file: "{xdc_file}"
+
+patches:
+  # === Soc.defines: grow the derived sizing macros by 2 (SPI2 + SPI3 bus bits) ===
+  # Guarded on `SPI2Base, which the soc_defines_memory patch below writes. These
+  # three are listed BEFORE it so that on a first run they still see a pristine
+  # Soc.defines and fire; on every re-run the marker exists and all three skip.
+  # Guarding on {calculated_val} instead would be wrong: it is only known at apply
+  # time, so it could never match and the counters would grow on every run.
+  - anchor_ref: "soc_defines_extint_width"
+    plic_gated: true   # connect_to_plic gate (skipped when false)
+    code: "`define ExtIntWidth {calculated_val}"
+    skip_if_contains: "`define SPI2Base"
+    apply_once: true
+    type: "cluster_config"
+    target_macro: "ExtIntWidth"
+    increment_by_instances: true
+
+  - anchor_ref: "soc_defines_extint_msb"
+    plic_gated: true   # connect_to_plic gate (skipped when false)
+    code: "`define ExtIntMsb {calculated_val}"
+    skip_if_contains: "`define SPI2Base"
+    apply_once: true
+    type: "cluster_config"
+    target_macro: "ExtIntMsb"
+    increment_by_instances: true
+
+  - anchor_ref: "soc_defines_plic_width"
+    plic_gated: true   # connect_to_plic gate (skipped when false)
+    code: "`define PLICWidth {calculated_val}"
+    skip_if_contains: "`define SPI2Base"
+    apply_once: true
+    type: "cluster_config"
+    target_macro: "PLICWidth"
+    increment_by_instances: true
+
+  # === Soc.defines: slave-count counters (grow by #instances) ===
+  - anchor_ref: "soc_defines_num_slaves"
+    code: "`define SPICluster_Num_Slaves {calculated_val}"
+    skip_if_contains: "`define {slave_id_macro}"
+    apply_once: true
+    type: "cluster_config"
+    target_macro: "SPICluster_Num_Slaves"
+    increment_by_instances: true
+
+  - anchor_ref: "soc_defines_err_slave"
+    code: |
+      `define {slave_id_macro} {allocated_slot}
+      `define SPICluster_err_slave_num {calculated_val}
+    skip_if_contains: "`define {slave_id_macro}"
+    type: "cluster_config"
+    target_macro: "SPICluster_err_slave_num"
+    increment_by_instances: true
+
+  # === Soc.defines: per-instance address map (mirrors SPI0/SPI1 format) ===
+  - anchor_ref: "soc_defines_memory"
+    code: |
+      {base_macro}     'h{base_addr}
+      {end_macro}      'h{end_addr}
+    skip_if_contains: "`define {base_macro}"
+    instance_aware: true
+
+  # === Soc.defines: widen the slow-fabric SPI cluster window (one-time) ===
+  - anchor_ref: "soc_defines_cluster_end"
+    code: "`define SPIClusterEnd     'h0002_03FF"
+    skip_if_matches: "`define\\s+SPIClusterEnd\\s+'h0002_03FF"
+    apply_once: true
+
+  # === spi_cluster.bsv: Ifc_sspi_io interface member ===
+  - anchor_ref: "spi_cluster_interface_decl"
+    code: "interface Ifc_sspi_io spi{instance_id}_io;"
+    skip_if_contains: "Ifc_sspi_io spi{instance_id}_io;"
+    instance_aware: true
+    indent_context: "interface_body"
+
+  # === spi_cluster.bsv: sideband-interrupt method (with attribute) ===
+  - anchor_ref: "spi_cluster_interrupt_decl"
+    code: |
+      (*always_ready, always_enabled*)
+      method Bit#(1) spi{instance_id}_sb_interrupt;
+    skip_if_contains: "spi{instance_id}_sb_interrupt;"
+    instance_aware: true
+    indent_context: "interface_body"
+
+  # === spi_cluster.bsv: mkspi instantiation ===
+  - anchor_ref: "spi_cluster_instantiation"
+    code: "let spi{instance_id} <- mkspi();"
+    skip_if_contains: "let spi{instance_id} <-"
+    instance_aware: true
+    indent_context: "module_body"
+
+  # === spi_cluster.bsv: address-decoder arm ===
+  - anchor_ref: "spi_cluster_addr_decoder"
+    code: |
+      else if(addr>= `{base_macro} && addr<= `{end_macro} )
+        slave_num =  `{slave_id_macro};
+    skip_if_contains: "`{base_macro}"
+    instance_aware: true
+    indent_context: "function_body"
+
+  # === spi_cluster.bsv: AXI slave connection ===
+  - anchor_ref: "spi_cluster_axi_conn"
+    code: "mkConnection (fabric.v_to_slaves [`{slave_id_macro} ],spi{instance_id}.slave);"
+    skip_if_contains: "spi{instance_id}.slave"
+    instance_aware: true
+    indent_context: "module_body"
+
+  # === spi_cluster.bsv: Ifc_sspi_io interface wiring ===
+  - anchor_ref: "spi_cluster_interface_wire"
+    code: "interface spi{instance_id}_io=spi{instance_id}.io;"
+    skip_if_contains: "spi{instance_id}_io=spi{instance_id}.io"
+    instance_aware: true
+    indent_context: "module_body"
+
+  # === spi_cluster.bsv: sideband-interrupt method wiring ===
+  - anchor_ref: "spi_cluster_interrupt_wire"
+    code: "method spi{instance_id}_sb_interrupt = spi{instance_id}.sb_sspi_interrupt;"
+    skip_if_contains: "spi{instance_id}_sb_interrupt = spi{instance_id}.sb_sspi_interrupt"
+    instance_aware: true
+    indent_context: "module_body"
+
+  # === Soc.bsv: chip_io Ifc_sspi_io (declaration + binding) ===
+  - anchor_ref: "soc_bsv_chip_io_decl"
+    code: "interface Ifc_sspi_io spi{instance_id}_io;"
+    skip_if_contains: "Ifc_sspi_io spi{instance_id}_io;"
+    instance_aware: true
+    indent_context: "interface_body"
+
+  - anchor_ref: "soc_bsv_chip_io_bind"
+    code: "interface spi{instance_id}_io = spi_cluster.spi{instance_id}_io;"
+    skip_if_contains: "spi{instance_id}_io = spi_cluster.spi{instance_id}_io"
+    instance_aware: true
+    indent_context: "module_body"
+
+  # === Soc.bsv: interrupt concat -- spi3/spi2 INSERTED above spi1 (MSB end) ===
+  # reverse_instances emits 3,2 (config order is 2,3), so the concat stays
+  # MSB -> LSB. Inserting (not replacing) means pwm_v1's pwm6..9 lines
+  # further down the same concat are untouched, in either apply order.
+  - anchor_ref: "soc_bsv_interrupt_concat"
+    plic_gated: true   # connect_to_plic gate (skipped when false)
+    code: "spi_cluster.spi{instance_id}_sb_interrupt,"
+    skip_if_contains: "spi_cluster.spi{instance_id}_sb_interrupt,"
+    instance_aware: true
+    reverse_instances: true
+
+  # ---- NO mixed_cluster.bsv interrupt-bus patch, NO PLIC absolute-index patch ----
+  # The bus width is derived from `ExtIntWidth (grown by +2 below), and the
+  # derived upper slice [`ExtIntMsb : `PWMCluster_Channels] already covers every
+  # non-PWM bus bit -- so `ext_int_bit` and the wr_external_interrupts[14]/[15]
+  # injections are gone. Those absolute indices were the bug: they assumed
+  # uart_interrupts was 4 bits wide (i.e. that uart_v1 had run), so sspi_v1
+  # standalone left the bus at Bit#(13) while indexing [15] -- a hard bsc error
+  # (S0015 index out-of-range). See UserManual Section 21.
+
+  # === fpga_top.v: dedicated ports (Verilog — indent observed from anchor) ===
+  - anchor_ref: "fpga_top_port_decl"
+    code: |
+      inout        spi{instance_id}_mosi,
+      inout        spi{instance_id}_miso,
+      inout        spi{instance_id}_nss,
+      inout        spi{instance_id}_sclk,
+    skip_if_contains: "spi{instance_id}_mosi,"
+    instance_aware: true
+
+  - anchor_ref: "fpga_top_soc_inst"
+    code: |
+      .spi{instance_id}_io_mosi_out(spi{instance_id}_io_mosi_out),
+      .spi{instance_id}_io_mosi_outen(spi{instance_id}_io_mosi_outen),
+      .spi{instance_id}_io_mosi_in_val(spi{instance_id}_io_mosi_in_val),
+      .spi{instance_id}_io_sclk_out(spi{instance_id}_io_sclk_out),
+      .spi{instance_id}_io_sclk_outen(spi{instance_id}_io_sclk_outen),
+      .spi{instance_id}_io_sclk_in_val(spi{instance_id}_io_sclk_in_val),
+      .spi{instance_id}_io_ncs_out0(spi{instance_id}_io_nss_out),
+      .spi{instance_id}_io_ncs_outen0(spi{instance_id}_io_nss_outen),
+      .spi{instance_id}_io_ncs_in0_val(spi{instance_id}_io_nss_in_val),
+      .spi{instance_id}_io_miso_out(spi{instance_id}_io_miso_out),
+      .spi{instance_id}_io_miso_outen(spi{instance_id}_io_miso_outen),
+      .spi{instance_id}_io_miso_in_val(spi{instance_id}_io_miso_in_val),
+    skip_if_contains: ".spi{instance_id}_io_mosi_out("
+    instance_aware: true
+
+  - anchor_ref: "fpga_top_iobuf"
+    code: |
+      IOBUF spi{instance_id}_inst_mosi(.O(spi{instance_id}_io_mosi_in_val),.IO(spi{instance_id}_mosi),.I(spi{instance_id}_io_mosi_out),.T(~spi{instance_id}_io_mosi_outen));
+      IOBUF spi{instance_id}_inst_miso(.O(spi{instance_id}_io_miso_in_val),.IO(spi{instance_id}_miso),.I(spi{instance_id}_io_miso_out),.T(~spi{instance_id}_io_miso_outen));
+      IOBUF spi{instance_id}_inst_nss(.O(spi{instance_id}_io_nss_in_val),.IO(spi{instance_id}_nss),.I(spi{instance_id}_io_nss_out),.T(~spi{instance_id}_io_nss_outen));
+      IOBUF spi{instance_id}_inst_sclk(.O(spi{instance_id}_io_sclk_in_val),.IO(spi{instance_id}_sclk),.I(spi{instance_id}_io_sclk_out),.T(~spi{instance_id}_io_sclk_outen));
+    skip_if_contains: "IOBUF spi{instance_id}_inst_mosi"
+    instance_aware: true
+
+  # === TbSoc.bsv: tie off chip_io.spi{N}_io inputs for simulation ===
+  - anchor_ref: "tbsoc_spi_tieoff"
+    code: |
+      soc.chip_io.spi{instance_id}_io.miso_in(1'b1);
+      soc.chip_io.spi{instance_id}_io.mosi_in(1'b1);
+      soc.chip_io.spi{instance_id}_io.ncs_in0(1'b1);
+      soc.chip_io.spi{instance_id}_io.sclk_in(1'b1);
+    skip_if_contains: "soc.chip_io.spi{instance_id}_io.sclk_in"
+    instance_aware: true
+    indent_context: "rule_body"
+
+  # === constraints.xdc: dedicated mosi/miso/nss/sclk pins (with fallback) ===
+  - anchor_ref: "xdc_pin_assign"
+    port_name: "spi{instance_id}_mosi"
+    target_board_pin: "{mosi_pin}"
+    fallback_pin: "{mosi_fallback}"
+    io_standard: "{spi_io_standard}"
+    skip_if_contains: "get_ports {spi{instance_id}_mosi}"
+    instance_aware: true
+    type: "xdc_pin_assign"
+
+  - anchor_ref: "xdc_pin_assign"
+    port_name: "spi{instance_id}_miso"
+    target_board_pin: "{miso_pin}"
+    fallback_pin: "{miso_fallback}"
+    io_standard: "{spi_io_standard}"
+    skip_if_contains: "get_ports {spi{instance_id}_miso}"
+    instance_aware: true
+    type: "xdc_pin_assign"
+
+  - anchor_ref: "xdc_pin_assign"
+    port_name: "spi{instance_id}_nss"
+    target_board_pin: "{nss_pin}"
+    fallback_pin: "{nss_fallback}"
+    io_standard: "{spi_io_standard}"
+    skip_if_contains: "get_ports {spi{instance_id}_nss}"
+    instance_aware: true
+    type: "xdc_pin_assign"
+
+  - anchor_ref: "xdc_pin_assign"
+    port_name: "spi{instance_id}_sclk"
+    target_board_pin: "{sclk_pin}"
+    fallback_pin: "{sclk_fallback}"
+    io_standard: "{spi_io_standard}"
+    skip_if_contains: "get_ports {spi{instance_id}_sclk}"
+    instance_aware: true
+    type: "xdc_pin_assign"

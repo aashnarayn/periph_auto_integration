@@ -1,0 +1,390 @@
+name: "gptimer_v1"
+yaml_version: "2.0"
+description: >
+  Add ONE additional direct-connected general-purpose timer (gptimer4) beside the
+  four existing timers gptimer0..gptimer3 of the mixed cluster.
+
+  The gptimer IP already lives in devices/gptimer/ and `devices/gptimer/` is
+  already on the bsvpath, and mixed_cluster.bsv already carries the
+  `(*synthesize*) module mkgptimer#(Clock ext_clk)` wrapper that gptimer0..3 are
+  built from. This def therefore adds NO new BSV source and NO bsvpath entry --
+  it only instantiates a fifth mkgptimer, gives it an address window and a
+  cluster slave slot, surfaces its Ifc_gptimer_io out through mixed_cluster.bsv
+  and Soc.bsv, and pins its two lines in fpga_top.v + the XDC.
+
+  "Direct connection" = gptimer4_in / gptimer4_out are plain top-level Verilog
+  ports wired straight to the SoC instance, exactly like gptimer0..3. They do NOT
+  pass through the pinmux, and -- unlike rtc0/rtc1 or pwm6..9 -- they need no
+  IOBUF, because the existing four timers are already declared as a plain
+  `input`/`output` pair rather than as bidirectional pads.
+
+  ADDRESS MAP: gptimer4 takes 'h0004_0800..'h0004_08FF, the first free 256-byte
+  window above GPTimer3End ('h0004_05FF). RTC0/RTC1 occupy 'h0004_0600/0700 when
+  rtc_v1 is enabled, so this window never collides with them whether or not
+  rtc_v1 is present. gptimer0..3's windows are untouched, so there is no software
+  regression for the existing timers.
+
+  INDEPENDENCE: this peripheral shares no ORDERING dependency with any other IP.
+    * Cluster slave slot. GPTimer4_slave_num is NOT hardcoded: it is the
+      `allocated_slot` that the MixedCluster_err_slave_num counter is displacing,
+      computed at apply time. Standalone it takes slot 10 (err -> 11, Num -> 12);
+      after rtc_v1 (which took 10/11) it takes 12; after rtc_v1 + i2c_v1 it takes
+      14. No fixed slave number, no required position in the peripheral list.
+    * PLIC. gptimer4.sb_interrupt is a DISCRETE signal, inserted into the
+      plic_inputs concat by the width-agnostic plic_vector handler, with the
+      mkplic wrapper width synced from the handler's shared state -- exactly the
+      mechanism rtc_v1 and i2c_v1 use. It does NOT consume a bit of the shared
+      `wr_external_interrupts` bus, so it never touches the Bit#(13) interrupt
+      method width, and it carries no `ext_int_bit`. That is what frees it of the
+      ordering coupling that ties uart_v1 (bus 13->14) and sspi_v1
+      (bus 14->16) to each other.
+    * Anchors. Every anchor it matches (`interface Ifc_gptimer_io gptimer3_io;`,
+      `slave_num = `GPTimer3_slave_num;`, `let gptimer3 <- mkgptimer(ext_clk);`,
+      `output gptimer3_out,`, ...) exists in a pristine tree, is matched with
+      `position: after`/`before` (never `replace`), and is therefore never
+      consumed. rtc_v1 and pwm_v1 anchor on some of the same pristine
+      lines; because none of the three consumes them, all orderings agree.
+  It may therefore be listed ANYWHERE in soc_build_config.yaml's
+  `automated_peripherals`, with or without any other peripheral present.
+
+  IDEMPOTENCY: every patch carries a skip guard keyed on text that only exists
+  once the patch has landed, so re-running any phase is a no-op:
+    * literal patches      -> `skip_if_contains` on the injected text;
+    * the counter patches  -> `skip_if_contains: "`define GPTimer4_slave_num"`,
+      NOT on {calculated_val} (which is only known at apply time and could never
+      match, so the counters would increment on every re-run);
+    * the plic_vector patch -> the handler itself is delta-aware: it re-parses
+      the concat and skips a signal already present, and it then leaves
+      shared_state['plic_width'] unset, which makes the dependent mkplic wrapper
+      patch skip too;
+    * the XDC patch        -> the analyzer treats "target pin already holds this
+      very port" as a no-op rather than a conflict.
+
+  ELECTRICALS: gptimer4_in/out land on fmc_la17_cc_n / fmc_la18_cc_n, the only
+  two FMC-LA pins that no other peripheral in soc_build_config.yaml claims as
+  either a primary or a fallback. They sit in the VADJ bank at 1.2V, hence
+  LVCMOS12 -- matching gptimer2/gptimer3, i2c1 and gpio_29-31. The fallback pins
+  are consulted only if a primary is already taken.
+
+# =============================================================================
+# ANCHORS: Reusable, instance-agnostic injection points
+# =============================================================================
+anchors:
+  # ---- Soc.defines: address window ----
+  soc_defines_memory:
+    file: "{board_dir}/Soc.defines"
+    pattern: '^`define GPTimer3End\s+''h0004_05FF'
+    position: "after"
+
+  # ---- Soc.defines: cluster slave counters ----
+  soc_defines_num_slaves:
+    file: "{board_dir}/Soc.defines"
+    pattern: '^`define\s+MixedCluster_Num_Slaves\s+\d+'
+    position: "replace"
+
+  soc_defines_err_slave:
+    file: "{board_dir}/Soc.defines"
+    pattern: '^`define\s+MixedCluster_err_slave_num\s+\d+'
+    position: "replace"
+
+  # ---- mixed_cluster.bsv ----
+  # `import gptimer::*;` and the `(*synthesize*) module mkgptimer#(Clock ext_clk)`
+  # wrapper already exist for gptimer0..3, so neither is patched here.
+  mixed_cluster_interface_decl:
+    file: "{board_dir}/mixed_cluster.bsv"
+    pattern: '^\s*interface Ifc_gptimer_io gptimer3_io;'
+    position: "after"
+
+  mixed_cluster_addr_decoder:
+    file: "{board_dir}/mixed_cluster.bsv"
+    pattern: 'slave_num = `GPTimer3_slave_num;'
+    position: "after"
+
+  mixed_cluster_instantiation:
+    file: "{board_dir}/mixed_cluster.bsv"
+    pattern: '^\s*let gptimer3 <- mkgptimer\(ext_clk\);'
+    position: "after"
+
+  mixed_cluster_axi_conn:
+    file: "{board_dir}/mixed_cluster.bsv"
+    pattern: 'mkConnection \(fabric\.v_to_slaves \[`GPTimer3_slave_num \],gptimer3\.slave\);'
+    position: "after"
+
+  mixed_cluster_interface_wire:
+    file: "{board_dir}/mixed_cluster.bsv"
+    pattern: '^\s*interface gptimer3_io = gptimer3\.io;'
+    position: "after"
+
+  # ---- Soc.defines: this IP's slave number, emitted NEXT TO ITS FAMILY ----
+  # GPTimer4 sits with GPTimer0..3 rather than in a lump above the err slot.
+  soc_defines_family_slot:
+    file: "{board_dir}/Soc.defines"
+    pattern: '^`define\s+GPTimer3_slave_num\s+\d+'
+    position: "after"
+
+  # ---- Soc.defines: derived PLIC width (UserManual Section 21) ----
+  soc_defines_plic_width:
+    file: "{board_dir}/Soc.defines"
+    pattern: '^`define\s+PLICWidth\s+\d+'
+    position: "replace"
+
+  # ---- mixed_cluster.bsv: PLIC vector + mkplic wrapper width (special handlers) ----
+  # ---- mixed_cluster.bsv: PLIC vector -- INSERT into this IP's group ----
+  # gptimer4 goes directly ABOVE gptimer3, keeping gptimer4..0 contiguous and descending.
+  mixed_cluster_plic_vector:
+    file: "{board_dir}/mixed_cluster.bsv"
+    pattern: '^\s*gptimer3\.sb_interrupt,'
+    position: "before"
+
+
+  # ---- Soc.bsv ----
+  # `import gptimer::*;` already present for gptimer0..3.
+  soc_bsv_interface_decl:
+    file: "{board_dir}/Soc.bsv"
+    pattern: 'interface Ifc_gptimer_io gptimer3_io;'
+    position: "after"
+
+  soc_bsv_interface_wire:
+    file: "{board_dir}/Soc.bsv"
+    pattern: 'interface gptimer3_io = mixed_cluster\.gptimer3_io;'
+    position: "after"
+
+  # ---- TbSoc.bsv: drive the new always_enabled input_signal in simulation ----
+  # Ifc_gptimer_io.input_signal is an (*always_enabled*) Action method, so once
+  # gptimer4_io is exposed on chip_io the testbench MUST call it every cycle or
+  # bsc rejects mkTbSoc. gptimer0..3 are tied off the same way in this rule.
+  tbsoc_gpt_tieoff:
+    file: "{board_dir}/TbSoc.bsv"
+    pattern: 'soc\.chip_io\.gptimer3_io\.input_signal\(1''b0\);'
+    position: "after"
+
+  # ---- fpga_top.v: plain in/out ports, no IOBUF (mirrors gptimer0..3) ----
+  fpga_top_port_decl:
+    file: "{board_dir}/fpga_top.v"
+    pattern: 'output\s+gptimer3_out\s*,'
+    position: "after"
+
+  fpga_top_soc_inst:
+    file: "{board_dir}/fpga_top.v"
+    pattern: '\.gptimer3_io_timer_out\(gptimer3_out\),'
+    position: "after"
+
+  # ---- constraints.xdc ----
+  xdc_pin_assign:
+    type: "xdc_pin_assign"
+    file: "{xdc_file}"
+
+# =============================================================================
+# PATCHES
+# =============================================================================
+patches:
+  # === Soc.defines: grow `PLICWidth by this IP's discrete PLIC signal count ===
+  # `PLICWidth is no longer rewritten by the plic_vector handler; it is DERIVED
+  # in Soc.defines and each contributing IP bumps it by its instance count.
+  # Guarded on `GPTimer4Base, which the soc_defines_memory patch writes -- so this
+  # counter is listed FIRST and still sees a pristine Soc.defines on a first run.
+  - anchor_ref: "soc_defines_plic_width"
+    plic_gated: true   # connect_to_plic gate (skipped when false)
+    code: "`define PLICWidth {calculated_val}"
+    skip_if_contains: "`define GPTimer4Base"
+    apply_once: true
+    type: "cluster_config"
+    target_macro: "PLICWidth"
+    increment_by_instances: true
+
+  # === Soc.defines: address window ===
+  # Lines that do not already start with `define get "`define" + the spacing
+  # observed at the anchor prepended by IndentationAnalyzer.apply_defines_indent.
+  - anchor_ref: "soc_defines_memory"
+    code: |
+      {base_macro}    'h{base_addr}
+      {end_macro}     'h{end_addr}
+    skip_if_contains: "`define {base_macro}"
+    instance_aware: true
+
+  # === Soc.defines: MixedCluster_Num_Slaves (grow by #instances) ===
+  # The skip guard keys on the per-instance slave macro, never on
+  # {calculated_val}: the latter is only known at apply time, so a skip built
+  # from it can never match and every re-run would increment the counter again.
+  - anchor_ref: "soc_defines_num_slaves"
+    code: "`define MixedCluster_Num_Slaves {calculated_val}"
+    skip_if_contains: "`define {slave_id_macro}"
+    apply_once: true
+    type: "cluster_config"
+    target_macro: "MixedCluster_Num_Slaves"
+    increment_by_instances: true
+
+  # === Soc.defines: GPTimer4_slave_num + MixedCluster_err_slave_num ===
+  # {allocated_slot} is the err-slot this instance displaces, so the slave number
+  # is derived, not hardcoded -- see the INDEPENDENCE note in the header.
+  - anchor_ref: "soc_defines_err_slave"
+    code: "`define MixedCluster_err_slave_num {calculated_val}"
+    skip_if_contains: "`define {slave_id_macro}"
+    apply_once: true
+    type: "cluster_config"
+    target_macro: "MixedCluster_err_slave_num"
+    increment_by_instances: true
+
+  # === Soc.defines: slave number, next to its family ===
+  # {allocated_slot} is published onto the instance by the err_slave
+  # cluster_config patch ABOVE, so this must stay after it.
+  - anchor_ref: "soc_defines_family_slot"
+    code: "`define {slave_id_macro} {allocated_slot}"
+    skip_if_contains: "`define {slave_id_macro}"
+    instance_aware: true
+
+  # === mixed_cluster.bsv: Ifc_mixed_cluster interface declaration ===
+  - anchor_ref: "mixed_cluster_interface_decl"
+    code: |
+      (*always_ready,always_enabled*)
+      interface Ifc_gptimer_io gptimer{instance_id}_io;
+    skip_if_contains: "interface Ifc_gptimer_io gptimer{instance_id}_io;"
+    instance_aware: true
+    indent_context: "interface_body"
+
+  # === mixed_cluster.bsv: address decoder arm ===
+  - anchor_ref: "mixed_cluster_addr_decoder"
+    code: |
+      else if(addr>= `{base_macro} && addr<= `{end_macro})
+        slave_num = `{slave_id_macro};
+    skip_if_contains: "`{base_macro}"
+    instance_aware: true
+    indent_context: "function_body"
+
+  # === mixed_cluster.bsv: instantiate the fifth timer ===
+  - anchor_ref: "mixed_cluster_instantiation"
+    code: "let gptimer{instance_id} <- mkgptimer(ext_clk);"
+    skip_if_contains: "let gptimer{instance_id} <- mkgptimer"
+    instance_aware: true
+    indent_context: "module_body"
+
+  # === mixed_cluster.bsv: AXI4-Lite fabric connection ===
+  - anchor_ref: "mixed_cluster_axi_conn"
+    code: "mkConnection (fabric.v_to_slaves [`{slave_id_macro} ],gptimer{instance_id}.slave);"
+    skip_if_contains: "[`{slave_id_macro} ]"
+    instance_aware: true
+    indent_context: "module_body"
+
+  # === mixed_cluster.bsv: expose the timer's io sub-interface ===
+  - anchor_ref: "mixed_cluster_interface_wire"
+    code: "interface gptimer{instance_id}_io = gptimer{instance_id}.io;"
+    skip_if_contains: "interface gptimer{instance_id}_io = gptimer{instance_id}.io;"
+    instance_aware: true
+    indent_context: "module_body"
+
+  # === mixed_cluster.bsv: PLIC vector (delta-aware special handler) ===
+  # Discrete signal, like rtc0/rtc1 and i2c2/i2c3 -- NOT a wr_external_interrupts
+  # bus bit, so the Bit#(13) interrupt method width is untouched.
+  # No skip_if_contains: the handler manages its own delta logic.
+  - anchor_ref: "mixed_cluster_plic_vector"
+    plic_gated: true   # connect_to_plic gate (skipped when false)
+    code: "gptimer{instance_id}.sb_interrupt,"
+    skip_if_contains: "gptimer{instance_id}.sb_interrupt,"
+    instance_aware: true
+    reverse_instances: true
+
+  # === mixed_cluster.bsv: mkplic wrapper width (synced from the handler) ===
+  # source_from_shared_state is only set when the plic_vector handler actually
+  # inserted a signal this run; on a re-run it stays unset and this patch skips.
+
+  # === Soc.bsv: chip_io interface declaration ===
+  - anchor_ref: "soc_bsv_interface_decl"
+    code: |
+      (*always_ready,always_enabled*)
+      interface Ifc_gptimer_io gptimer{instance_id}_io;
+    skip_if_contains: "interface Ifc_gptimer_io gptimer{instance_id}_io;"
+    instance_aware: true
+    indent_context: "interface_body"
+
+  # === Soc.bsv: bind chip_io to the cluster ===
+  - anchor_ref: "soc_bsv_interface_wire"
+    code: "interface gptimer{instance_id}_io = mixed_cluster.gptimer{instance_id}_io;"
+    skip_if_contains: "interface gptimer{instance_id}_io = mixed_cluster.gptimer{instance_id}_io;"
+    instance_aware: true
+    indent_context: "module_body"
+
+  # === TbSoc.bsv: tie off the new always_enabled input in simulation ===
+  - anchor_ref: "tbsoc_gpt_tieoff"
+    code: "soc.chip_io.gptimer{instance_id}_io.input_signal(1'b0);"
+    skip_if_contains: "soc.chip_io.gptimer{instance_id}_io.input_signal"
+    instance_aware: true
+    indent_context: "rule_body"
+
+  # === fpga_top.v: top-level ports ===
+  # One patch emitting both lines, so the pair is atomic: either the file already
+  # has gptimer{N}_out (skip both) or neither line is present (inject both).
+  - anchor_ref: "fpga_top_port_decl"
+    code: |
+      input gptimer{instance_id}_in,
+      output gptimer{instance_id}_out,
+    skip_if_contains: "output gptimer{instance_id}_out,"
+    instance_aware: true
+
+  # === fpga_top.v: SoC port map ===
+  # chip_io is declared (*prefix=""*) in DebugSoc.bsv, so the sub-interface
+  # methods surface as the bare ports gptimer{N}_io_input_signal_signal_in and
+  # gptimer{N}_io_timer_out, exactly as for gptimer0..3.
+  - anchor_ref: "fpga_top_soc_inst"
+    code: |
+      .gptimer{instance_id}_io_input_signal_signal_in(gptimer{instance_id}_in),
+      .gptimer{instance_id}_io_timer_out(gptimer{instance_id}_out),
+    skip_if_contains: ".gptimer{instance_id}_io_timer_out(gptimer{instance_id}_out),"
+    instance_aware: true
+
+  # === constraints.xdc: dedicated input pin ===
+  - anchor_ref: "xdc_pin_assign"
+    port_name: "gptimer{instance_id}_in"
+    target_board_pin: "{gptimer_in_pin}"
+    fallback_pin: "{gptimer_in_fallback}"
+    io_standard: "{gptimer_io_standard}"
+    skip_if_contains: "get_ports {gptimer{instance_id}_in}"
+    instance_aware: true
+    type: "xdc_pin_assign"
+
+  # === constraints.xdc: dedicated output pin ===
+  - anchor_ref: "xdc_pin_assign"
+    port_name: "gptimer{instance_id}_out"
+    target_board_pin: "{gptimer_out_pin}"
+    fallback_pin: "{gptimer_out_fallback}"
+    io_standard: "{gptimer_io_standard}"
+    skip_if_contains: "get_ports {gptimer{instance_id}_out}"
+    instance_aware: true
+    type: "xdc_pin_assign"
+
+# =============================================================================
+# ANCHOR REFERENCE (for --pre-audit / --post-audit)
+# Run: make pre_validate_automation    (before automation)
+# Run: make post_validate_automation   (after automation)
+# =============================================================================
+#
+# PRE-AUDIT ANCHORS (must exist in {board_dir}/ in a pristine tree):
+#   {board_dir}/Soc.defines:         "^`define GPTimer3End\s+'h0004_05FF"
+#   {board_dir}/Soc.defines:         "^`define MixedCluster_Num_Slaves \d+"
+#   {board_dir}/Soc.defines:         "^`define MixedCluster_err_slave_num \d+"
+#   {board_dir}/mixed_cluster.bsv:   "interface Ifc_gptimer_io gptimer3_io;"
+#   {board_dir}/mixed_cluster.bsv:   "slave_num = `GPTimer3_slave_num;"
+#   {board_dir}/mixed_cluster.bsv:   "let gptimer3 <- mkgptimer\(ext_clk\);"
+#   {board_dir}/mixed_cluster.bsv:   "mkConnection \(fabric\.v_to_slaves \[`GPTimer3_slave_num \],gptimer3\.slave\);"
+#   {board_dir}/mixed_cluster.bsv:   "interface gptimer3_io = gptimer3\.io;"
+#   {board_dir}/mixed_cluster.bsv:   "Bit#(35) plic_inputs= {"  (width may vary)
+#   {board_dir}/mixed_cluster.bsv:   "module mkplic\(Ifc_plic_axi4lite#\(`paddr, `buswidth, `USERSPACE,\s*\d+"
+#   {board_dir}/Soc.bsv:             "interface Ifc_gptimer_io gptimer3_io;"
+#   {board_dir}/Soc.bsv:             "interface gptimer3_io = mixed_cluster\.gptimer3_io;"
+#   {board_dir}/TbSoc.bsv:           "soc\.chip_io\.gptimer3_io\.input_signal\(1'b0\);"
+#   {board_dir}/fpga_top.v:          "output\s+gptimer3_out\s*,"
+#   {board_dir}/fpga_top.v:          "\.gptimer3_io_timer_out\(gptimer3_out\),"
+#
+# POST-AUDIT (per instance N, here N=4):
+#   {board_dir}/Soc.defines:         GPTimer{N}Base / GPTimer{N}End defined
+#   {board_dir}/Soc.defines:         GPTimer{N}_slave_num = {allocated_slot}; Num_Slaves and err_slave_num both +1
+#   {board_dir}/mixed_cluster.bsv:   interface Ifc_gptimer_io gptimer{N}_io; declared
+#   {board_dir}/mixed_cluster.bsv:   decoder arm for GPTimer{N}Base..GPTimer{N}End
+#   {board_dir}/mixed_cluster.bsv:   let gptimer{N} <- mkgptimer(ext_clk); instantiated
+#   {board_dir}/mixed_cluster.bsv:   mkConnection for `GPTimer{N}_slave_num
+#   {board_dir}/mixed_cluster.bsv:   interface gptimer{N}_io = gptimer{N}.io;
+#   {board_dir}/mixed_cluster.bsv:   gptimer{N}.sb_interrupt present in plic_inputs; width +1; mkplic wrapper synced
+#   {board_dir}/Soc.bsv:             gptimer{N}_io declared and bound to mixed_cluster
+#   {board_dir}/TbSoc.bsv:           soc.chip_io.gptimer{N}_io.input_signal(1'b0);
+#   {board_dir}/fpga_top.v:          "input gptimer{N}_in," + "output gptimer{N}_out,"
+#   {board_dir}/fpga_top.v:          ".gptimer{N}_io_input_signal_signal_in(gptimer{N}_in)," + ".gptimer{N}_io_timer_out(gptimer{N}_out),"
+#   {xdc_file}:                      "[get_ports {gptimer{N}_in}]" and "[get_ports {gptimer{N}_out}]"

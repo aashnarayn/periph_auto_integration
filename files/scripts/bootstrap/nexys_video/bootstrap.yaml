@@ -1,0 +1,141 @@
+name: board_bootstrap
+description: Seed the anchor comments / derived macros a fresh clone lacks.
+seeds:
+- file: '{board_dir}/Soc.defines'
+  hunks:
+  - find: '
+
+      `define SPI0_slave_num 0
+
+      `define SPI1_slave_num 1
+
+      //`define SPI2_slave_num 2
+
+      `define SPICluster_err_slave_num 2
+
+
+      `define SPI0Base     ''h0002_0000
+
+      `define SPI0End      ''h0002_00FF
+
+      `define SPI1Base     ''h0002_0100
+
+      `define SPI1End      ''h0002_01FF
+
+      //`define SPI2Base     ''h0002_0200
+
+      //`define SPI2End      ''h0002_02FF
+
+
+      // - UART cluster
+
+      `define UARTCluster_Num_Slaves 4
+
+      '
+    replace: '
+
+      `define SPI0_slave_num 0
+
+      `define SPI1_slave_num 1
+
+      `define SPICluster_err_slave_num 2
+
+
+      `define SPI0Base     ''h0002_0000
+
+      `define SPI0End      ''h0002_00FF
+
+      `define SPI1Base     ''h0002_0100
+
+      `define SPI1End      ''h0002_01FF
+
+
+      // - UART cluster
+
+      `define UARTCluster_Num_Slaves 4
+
+      '
+  - find: "\n`define I2C0Base    'h0004_0000\n`define I2C0End     'h0004_00FF\n`define GPIOBase\t  'h0004_0100\n`define GPIOEnd\t\t  'h0004_01FF\n`define GPTimer0Base\t\t\t\t\t'h0004_0200\n"
+    replace: "\n`define I2C0Base    'h0004_0000\n`define I2C0End     'h0004_00FF\n`define I2C1Base    'h0004_1400\n`define I2C1End     'h0004_14FF\n`define GPIOBase\t  'h0004_0100\n`define GPIOEnd\t\t  'h0004_01FF\n`define GPTimer0Base\t\t\t\t\t'h0004_0200\n"
+  - find: "`define GPTimer3End \t\t\t\t\t'h0004_05FF\n`define XADCBase    'h0004_1000\n`define XADCEnd     'h0004_13FF\n`define I2C1Base    'h0004_1400\n`define I2C1End     'h0004_14FF\n`define PinmuxBase      'h0004_1500\n`define PinmuxConfigReg 'h0004_1510\n`define PinmuxEnd       'h0004_15FF\n`define PLICBase\t  'h0C00_0000\n`define PLICEnd\t    'h0FFF_FFFF\n\n\n"
+    replace: "`define GPTimer3End \t\t\t\t\t'h0004_05FF\n`define XADCBase    'h0004_1000\n`define XADCEnd     'h0004_13FF\n`define PinmuxBase      'h0004_1500\n`define PinmuxConfigReg 'h0004_1510\n`define PinmuxEnd       'h0004_15FF\n`define PLICBase\t  'h0C00_0000\n`define PLICEnd\t    'h0FFF_FFFF\n\n// - Interrupt bus / PLIC sizing (see UserManual Section 21)\n//\n// The `mixed_cluster.interrupts` bus is a concatenation, MSB -> LSB:\n//     { spi.., spi1, spi0, wr_ext_interrupts[1:0], uart_interrupts, pwm..pwm0 }\n// PWM sits at the LSB end, so widening PWM shifts every field above it. These\n// macros make every width and slice bound DERIVED rather than hardcoded, so any\n// subset of peripherals composes in any order. Each contributing IP grows them\n// through a cluster_config counter in its own YAML:\n//\n//   pwm_v1_nopinmux  (4 channels) : Channels +4, Msb +4, ExtIntWidth +4, PLICWidth +4\n//   uart_v1          (UART3)      :                      ExtIntWidth +1, PLICWidth +1\n//   sspi_v1          (SPI2, SPI3) :                      ExtIntWidth +2, PLICWidth +2\n//   rtc / i2c / gptimer / watchdog (discrete PLIC sources): PLICWidth += #instances\n//\n// Baseline values below reproduce the original hardcoded widths exactly\n// (Bit#(13) interrupt bus, Bit#(35) plic_inputs).\n//\n// Bit-index macros are needed because BSV accepts neither arithmetic inside\n// Bit#(...) nor arithmetic in a static bit-slice bound -- both must be literals.\n`define PWMCluster_Channels 6\n`define PWMChannelsMsb 5\n`define ExtIntWidth 13\n`define ExtIntMsb 12\n`define PLICWidth 35\n\n\n"
+- file: '{board_dir}/fpga_top.v'
+  hunks:
+  - find: "\n    input gptimer3_in,\n    output gptimer3_out,\n\t\n\n\n\n    // ---- System Reset ------//\n    input         sys_rst,\t//Active Low\n"
+    replace: "\n    input gptimer3_in,\n    output gptimer3_out,\n\n    // Peripherals that extend an EXISTING family (e.g. gptimer4) anchor on that\n    // family's last port instead, so they stay ordered with their siblings.\n    // ---- direct-connected peripheral ports (added by automation) ----\n\n    // ---- System Reset ------//\n    input         sys_rst,\t//Active Low\n"
+  - find: "        .spi0_io_ncs_out0(spi0_io_nss_out),\n        .spi0_io_ncs_outen0(spi0_io_nss_outen),\n        .spi0_io_ncs_in0_val(spi0_io_nss_in_val),\n\t.spi0_io_miso_out(spi0_io_miso_out),\n\t.spi0_io_miso_outen(spi0_io_miso_outen),\n\t.spi0_io_miso_in_val(spi0_io_miso_in_val),\n\n       // UART port definitions\n        .uart0_io_SIN(uart0_SIN),\n"
+    replace: "        .spi0_io_ncs_out0(spi0_io_nss_out),\n        .spi0_io_ncs_outen0(spi0_io_nss_outen),\n        .spi0_io_ncs_in0_val(spi0_io_nss_in_val),\n        .spi0_io_miso_out(spi0_io_miso_out),\n        .spi0_io_miso_outen(spi0_io_miso_outen),\n        .spi0_io_miso_in_val(spi0_io_miso_in_val),\n\n       // UART port definitions\n        .uart0_io_SIN(uart0_SIN),\n"
+  - find: "        .i2c1_out_sda_out_en(i2c1_sda_out_en),\n\n        .gptimer0_io_input_signal_signal_in(gptimer0_in),\n\t\t    .gptimer0_io_timer_out(gptimer0_out),\t\n\n        .gptimer1_io_input_signal_signal_in(gptimer1_in),\n\t\t    .gptimer1_io_timer_out(gptimer1_out),\t\n\n        .gptimer2_io_input_signal_signal_in(gptimer2_in),\n\t\t    .gptimer2_io_timer_out(gptimer2_out),\t\n\n        .gptimer3_io_input_signal_signal_in(gptimer3_in),\n\t\t    .gptimer3_io_timer_out(gptimer3_out),\t\n\n        //pin muxed pins\n    \t  .iocell_io_io7_cell_in_in(io7_cell_in),\n"
+    replace: "        .i2c1_out_sda_out_en(i2c1_sda_out_en),\n\n        .gptimer0_io_input_signal_signal_in(gptimer0_in),\n        .gptimer0_io_timer_out(gptimer0_out),\n\n        .gptimer1_io_input_signal_signal_in(gptimer1_in),\n        .gptimer1_io_timer_out(gptimer1_out),\n\n        .gptimer2_io_input_signal_signal_in(gptimer2_in),\n        .gptimer2_io_timer_out(gptimer2_out),\n\n        .gptimer3_io_input_signal_signal_in(gptimer3_in),\n        .gptimer3_io_timer_out(gptimer3_out),\n\n        // ---- direct-connected peripheral port maps (added by automation) ----\n\n        //pin muxed pins\n    \t  .iocell_io_io7_cell_in_in(io7_cell_in),\n"
+- file: '{board_dir}/Soc.bsv'
+  hunks:
+  - find: "\n  interface Ifc_chip_io;\n    interface Ifc_sspi_io spi0_io;\n//    interface Ifc_sspi_io spi1_io;\n    interface RS232 uart0_io;\n\t\tmethod I2C_out i2c0_out;\t\t\t\t\t\t\t\t\t//I2c IO interface\n\t\tmethod I2C_out i2c1_out;\t\t\t\t\t\t\t\t\t//I2c IO interface\n    (*always_ready, always_enabled*)\n    interface AXI4_Master_IFC#(`paddr, `axi4_id_width, `buswidth, `USERSPACE) mem_master;\n    interface IOCellSide iocell_io;\n\n    (*always_ready,always_enabled*)\n\t  interface Ifc_gptimer_io gptimer0_io;\n    (*always_ready,always_enabled*)\n    interface Ifc_gptimer_io gptimer1_io;\n    (*always_ready,always_enabled*)\n"
+    replace: "\n  interface Ifc_chip_io;\n    interface Ifc_sspi_io spi0_io;\n    // spi1 is the PINMUXED SPI: it is fully functional (instantiated, on the AXI\n    // fabric, address-decoded, interrupt wired to the PLIC) but reaches its pins\n    // through the pinmux `mspi` cell, NOT through a dedicated chip_io port. Its\n    // input Action methods (miso_in/mosi_in/sclk_in/ncs_in0) are already called by\n    // rule connect_pinmux_peripheral_input_lines, so exporting spi1_io here would\n    // give them a second caller and bsc would reject the design (G0066). Kept in\n    // position, commented, so the block still reads spi0, spi1, spi2, spi3.\n//    interface Ifc_sspi_io spi1_io;\n    interface RS232 uart0_io;\n\t\tmethod I2C_out i2c0_out;\t\t\t\t\t\t\t\t\t//I2c IO interface\n    method I2C_out i2c1_out; //I2c IO interface\n    (*always_ready, always_enabled*)\n    interface AXI4_Master_IFC#(`paddr, `axi4_id_width, `buswidth, `USERSPACE) mem_master;\n    interface IOCellSide iocell_io;\n\n    (*always_ready,always_enabled*)\n    interface Ifc_gptimer_io gptimer0_io;\n    (*always_ready,always_enabled*)\n    interface Ifc_gptimer_io gptimer1_io;\n    (*always_ready,always_enabled*)\n"
+  - find: "\t\tendrule\n\t`endif\n\n    rule connect_interrupt_lines;\n      mixed_cluster.interrupts({spi_cluster.spi1_sb_interrupt,\n                                spi_cluster.spi0_sb_interrupt,\n                                wr_ext_interrupts, uart_cluster.uart_interrupts, pwm_cluster.pwm5_sb_interrupt, \n                                                  pwm_cluster.pwm4_sb_interrupt, \n                                                  pwm_cluster.pwm3_sb_interrupt, \n                                                  pwm_cluster.pwm2_sb_interrupt, \n                                                  pwm_cluster.pwm1_sb_interrupt, \n                                                  pwm_cluster.pwm0_sb_interrupt});\n    endrule\n    \n\n"
+    replace: "\t\tendrule\n\t`endif\n\n    // Interrupt bus, MSB -> LSB. One signal per line so an IP def can INSERT its\n    // own signals at a stable anchor instead of rewriting the whole rule (which\n    // is what made uart_v1 and sspi_v1 fight over this block). PWM sits at the\n    // LSB end, so pwm_cluster.pwm{i}_sb_interrupt lands on bus bit [i]. Widths\n    // are derived from `ExtIntWidth in Soc.defines -- see UserManual Section 21.\n    rule connect_interrupt_lines;\n      mixed_cluster.interrupts({\n        spi_cluster.spi1_sb_interrupt,\n        spi_cluster.spi0_sb_interrupt,\n        wr_ext_interrupts,\n        uart_cluster.uart_interrupts,\n        pwm_cluster.pwm5_sb_interrupt,\n        pwm_cluster.pwm4_sb_interrupt,\n        pwm_cluster.pwm3_sb_interrupt,\n        pwm_cluster.pwm2_sb_interrupt,\n        pwm_cluster.pwm1_sb_interrupt,\n        pwm_cluster.pwm0_sb_interrupt});\n    endrule\n    \n\n"
+  - find: "//    interface spi1_io = spi_cluster.spi1_io;\n    interface uart0_io = uart_cluster.uart0_io;\n\t\tmethod  i2c0_out = mixed_cluster.i2c0_out;\t\t\t\t\t\t\t\t\t//I2c IO interface\n\t\tmethod  i2c1_out = mixed_cluster.i2c1_out;\t\t\t\t\t\t\t\t\t//I2c IO interface\n    interface iocell_io = mixed_cluster.pinmuxtop_iocell_side;\t\t\t\t\t\t//GPIO IO interface\n    interface mem_master = fabric.v_to_slaves [`Memory_slave_num];\n    method Action ext_interrupts(Bit#(2) i);\n"
+    replace: "//    interface spi1_io = spi_cluster.spi1_io;\n    interface uart0_io = uart_cluster.uart0_io;\n\t\tmethod  i2c0_out = mixed_cluster.i2c0_out;\t\t\t\t\t\t\t\t\t//I2c IO interface\n    method  i2c1_out = mixed_cluster.i2c1_out; //I2c IO interface\n    interface iocell_io = mixed_cluster.pinmuxtop_iocell_side;\t\t\t\t\t\t//GPIO IO interface\n    interface mem_master = fabric.v_to_slaves [`Memory_slave_num];\n    method Action ext_interrupts(Bit#(2) i);\n"
+- file: '{board_dir}/mixed_cluster.bsv'
+  hunks:
+  - find: "--------------------------------------------------------------------------------------------------\n*/\npackage mixed_cluster;\n\timport AXI4_Lite_Types:: *;\n\timport AXI4_Lite_Fabric:: *;\n  import err_slave::*;\n  import Connectable:: *;\n  import GetPut:: *;\n"
+    replace: "--------------------------------------------------------------------------------------------------\n*/\npackage mixed_cluster;\n  import AXI4_Lite_Types:: *;\n  import AXI4_Lite_Fabric:: *;\n  import err_slave::*;\n  import Connectable:: *;\n  import GetPut:: *;\n"
+  - find: "  `include \"Soc.defines\"\n\n  interface Ifc_mixed_cluster;\n\t\tmethod I2C_out i2c0_out;\t\t\t\t\t\t\t\t\t//I2c IO interface\n\t\tmethod I2C_out i2c1_out;\t\t\t\t\t\t\t\t\t//I2c IO interface\n    method Bit#(2) sb_ext_interrupt;\n    (*always_ready, always_enabled*)\n    interface GPIO#(32) gpio_io;\t\t\t\t\t\t//GPIO IO interface\n    \n    (*always_ready,always_enabled*)\n\t  interface Ifc_gptimer_io gptimer0_io;\n    (*always_ready,always_enabled*)\n\t  interface Ifc_gptimer_io gptimer1_io;\n    (*always_ready,always_enabled*)\n\t  interface Ifc_gptimer_io gptimer2_io;\n    (*always_ready,always_enabled*)\n\t  interface Ifc_gptimer_io gptimer3_io;\n\n    interface IOCellSide pinmuxtop_iocell_side;\n    interface PeripheralSide pinmuxtop_peripheral_side;\n    (*always_ready, always_enabled*)\n\t\tmethod Action interrupts(Bit#(13) inp);\n    interface AXI4_Lite_Slave_IFC#(`paddr, `buswidth, `USERSPACE) slave;\n  endinterface\n\n  (*synthesize*)\n  module mki2c (Ifc_i2c_axi4lite#(`paddr, `buswidth, `USERSPACE));\n\t  let core_clock<-exposeCurrentClock;\n  \tlet core_reset<-exposeCurrentReset;\n    let ifc();\n    mki2c_axi4lite#(core_clock, core_reset) _temp(ifc);\n    return ifc;\n  endmodule\n\n  (*synthesize*)\nmodule mkgptimer#(Clock ext_clk)(Ifc_gptimer_axi4lite#(`paddr, `buswidth, `USERSPACE,32)); \n  let ifc();\n  mkgptimer_axi4lite#(ext_clk) _temp(ifc);\n  return ifc;\nendmodule\n\n  (*synthesize*)\n  module mkgpio(Ifc_gpio_axi4lite#(`paddr, `buswidth, `USERSPACE, 32));\n"
+    replace: "  `include \"Soc.defines\"\n\n  interface Ifc_mixed_cluster;\n    method I2C_out i2c0_out;  //I2c IO interface\n    method I2C_out i2c1_out; //I2c IO interface\n    method Bit#(2) sb_ext_interrupt;\n    (*always_ready, always_enabled*)\n    interface GPIO#(32) gpio_io;\t\t\t\t\t\t//GPIO IO interface\n    \n    (*always_ready,always_enabled*)\n    interface Ifc_gptimer_io gptimer0_io;\n    (*always_ready,always_enabled*)\n    interface Ifc_gptimer_io gptimer1_io;\n    (*always_ready,always_enabled*)\n    interface Ifc_gptimer_io gptimer2_io;\n    (*always_ready,always_enabled*)\n    interface Ifc_gptimer_io gptimer3_io;\n\n    interface IOCellSide pinmuxtop_iocell_side;\n    interface PeripheralSide pinmuxtop_peripheral_side;\n    (*always_ready, always_enabled*)\n    method Action interrupts(Bit#(`ExtIntWidth) inp);\n    interface AXI4_Lite_Slave_IFC#(`paddr, `buswidth, `USERSPACE) slave;\n  endinterface\n\n  (*synthesize*)\n  module mki2c (Ifc_i2c_axi4lite#(`paddr, `buswidth, `USERSPACE));\n    let core_clock<-exposeCurrentClock;\n    let core_reset<-exposeCurrentReset;\n    let ifc();\n    mki2c_axi4lite#(core_clock, core_reset) _temp(ifc);\n    return ifc;\n  endmodule\n\n  (*synthesize*)\n  module mkgptimer#(Clock ext_clk)(Ifc_gptimer_axi4lite#(`paddr, `buswidth, `USERSPACE,32));\n    let ifc();\n    mkgptimer_axi4lite#(ext_clk) _temp(ifc);\n    return ifc;\n  endmodule\n\n  (*synthesize*)\n  module mkgpio(Ifc_gpio_axi4lite#(`paddr, `buswidth, `USERSPACE, 32));\n"
+  - find: "  endmodule\n\n  (*synthesize*)\n  module mkplic(Ifc_plic_axi4lite#(`paddr, `buswidth, `USERSPACE, 35, 2, 7));\n    let ifc();\n    mkplic_axi4lite#(`PLICBase)_temp(ifc);\n    return ifc;\n"
+    replace: "  endmodule\n\n  (*synthesize*)\n  module mkplic(Ifc_plic_axi4lite#(`paddr, `buswidth, `USERSPACE, `PLICWidth, 2, 7));\n    let ifc();\n    mkplic_axi4lite#(`PLICBase)_temp(ifc);\n    return ifc;\n"
+  - find: "    else if(addr>= `I2C0Base && addr<= `I2C0End)\n      slave_num = `I2C0_slave_num;\n    else if(addr>= `GPTimer0Base && addr<= `GPTimer0End)\n\t\t\tslave_num = `GPTimer0_slave_num;\n    else if(addr>= `GPTimer1Base && addr<= `GPTimer1End)\n\t\t  slave_num = `GPTimer1_slave_num;\n    else if(addr>= `GPTimer2Base && addr<= `GPTimer2End)\n\t\t  slave_num = `GPTimer2_slave_num;\n    else if(addr>= `GPTimer3Base && addr<= `GPTimer3End)\n\t\t  slave_num = `GPTimer3_slave_num;\n    else if(addr>= `XADCBase && addr<= `XADCEnd)\n      slave_num = `XADC_slave_num;\n    else if(addr >= `PinmuxBase && addr <= `PinmuxEnd)\n"
+    replace: "    else if(addr>= `I2C0Base && addr<= `I2C0End)\n      slave_num = `I2C0_slave_num;\n    else if(addr>= `GPTimer0Base && addr<= `GPTimer0End)\n      slave_num = `GPTimer0_slave_num;\n    else if(addr>= `GPTimer1Base && addr<= `GPTimer1End)\n      slave_num = `GPTimer1_slave_num;\n    else if(addr>= `GPTimer2Base && addr<= `GPTimer2End)\n      slave_num = `GPTimer2_slave_num;\n    else if(addr>= `GPTimer3Base && addr<= `GPTimer3End)\n      slave_num = `GPTimer3_slave_num;\n    else if(addr>= `XADCBase && addr<= `XADCEnd)\n      slave_num = `XADC_slave_num;\n    else if(addr >= `PinmuxBase && addr <= `PinmuxEnd)\n"
+  - find: "    let gptimer3 <- mkgptimer(ext_clk);\n    let pinmuxtop <- mkpinmuxtop();\n    Ifc_err_slave_axi4lite#(`paddr, `buswidth, `USERSPACE ) err_slave <- mkerr_slave_axi4lite;\n\t\tWire#(Bit#(13)) wr_external_interrupts <- mkDWire('d0);\n    Wire#(Bit#(2)) wr_sb_ext_interrupt <- mkDWire(0);\n\n\t\t//Rule to connect PLIC interrupt to the core's sideband\n"
+    replace: "    let gptimer3 <- mkgptimer(ext_clk);\n    let pinmuxtop <- mkpinmuxtop();\n    Ifc_err_slave_axi4lite#(`paddr, `buswidth, `USERSPACE ) err_slave <- mkerr_slave_axi4lite;\n\t\tWire#(Bit#(`ExtIntWidth)) wr_external_interrupts <- mkDWire('d0);\n    Wire#(Bit#(2)) wr_sb_ext_interrupt <- mkDWire(0);\n\n\t\t//Rule to connect PLIC interrupt to the core's sideband\n"
+  - find: "\t\tendrule\n\n    rule rl_connect_plic_connections;\n\t\t\tlet tmp <- gpio.sb_gpio_to_plic.get;\n\t\t\tBit#(16) lv_gpio_intr= truncate(pack(tmp));\n\t\t\tBit#(35) plic_inputs= {wr_external_interrupts[12:6], i2c1.isint, i2c0.isint, gptimer3.sb_interrupt, gptimer2.sb_interrupt, gptimer1.sb_interrupt, gptimer0.sb_interrupt, lv_gpio_intr, wr_external_interrupts[5:0]};\n\t\t\tplic.sb_frm_sources(plic_inputs);\n\t\tendrule\n\n   \tmkConnection(c2m_xactor.axi_side, fabric.v_from_masters[0]);\n\n"
+    replace: "\t\tendrule\n\n    rule rl_connect_plic_connections;\n      let tmp <- gpio.sb_gpio_to_plic.get;\n      Bit#(16) lv_gpio_intr= truncate(pack(tmp));\n      // PLIC source vector, MSB -> LSB. One signal per line so an IP def can\n      // INSERT into its own family group at a stable anchor. Grouping rules:\n      //   * discrete sources with no family (watchdog, rtc) sit at the MSB;\n      //   * every family is contiguous and DESCENDING (gptimer4..0, i2c3..0);\n      //   * the external-interrupt bus is ONE undivided slice at the LSB end.\n      // Width is derived: `PLICWidth in Soc.defines (see UserManual Sections 21-23).\n      Bit#(`PLICWidth) plic_inputs= {\n        // ---- discrete PLIC sources (added by automation) ----\n        gptimer3.sb_interrupt,\n        gptimer2.sb_interrupt,\n        gptimer1.sb_interrupt,\n        gptimer0.sb_interrupt,\n        i2c1.isint,\n        i2c0.isint,\n        lv_gpio_intr,\n        wr_external_interrupts[`ExtIntMsb : 0]};\n      plic.sb_frm_sources(plic_inputs);\n    endrule\n\n   \tmkConnection(c2m_xactor.axi_side, fabric.v_from_masters[0]);\n\n"
+  - find: "    mkConnection(c2m_xactor.o_rd_data,c2s_xactor.i_rd_data);\n\t\t\n   \tmkConnection (fabric.v_to_slaves [`I2C0_slave_num ],\t\ti2c0.slave);\n   \tmkConnection (fabric.v_to_slaves [`I2C1_slave_num ],\t\ti2c1.slave);\n     mkConnection (fabric.v_to_slaves [`GPTimer0_slave_num ],gptimer0.slave);\n     mkConnection (fabric.v_to_slaves [`GPTimer1_slave_num ],gptimer1.slave);\n     mkConnection (fabric.v_to_slaves [`GPTimer2_slave_num ],gptimer2.slave);\n"
+    replace: "    mkConnection(c2m_xactor.o_rd_data,c2s_xactor.i_rd_data);\n\t\t\n   \tmkConnection (fabric.v_to_slaves [`I2C0_slave_num ],\t\ti2c0.slave);\n    mkConnection (fabric.v_to_slaves [`I2C1_slave_num ], i2c1.slave);\n     mkConnection (fabric.v_to_slaves [`GPTimer0_slave_num ],gptimer0.slave);\n     mkConnection (fabric.v_to_slaves [`GPTimer1_slave_num ],gptimer1.slave);\n     mkConnection (fabric.v_to_slaves [`GPTimer2_slave_num ],gptimer2.slave);\n"
+  - find: "    interface gptimer1_io = gptimer1.io;\n    interface gptimer2_io = gptimer2.io;\n    interface gptimer3_io = gptimer3.io;\n   \n\n    method sb_ext_interrupt = wr_sb_ext_interrupt;\n    interface gpio_io= gpio.io;\n\t\tmethod Action interrupts(Bit#(13) inp);\n\t\t\twr_external_interrupts<= inp;\n\t\tendmethod\n    interface pinmuxtop_iocell_side = pinmuxtop.pinmuxaxi4lite_iocell_side;\n    interface pinmuxtop_peripheral_side = pinmuxtop.pinmuxaxi4lite_peripheral_side;\n    interface slave= c2s_xactor.axi_side;\n"
+    replace: "    interface gptimer1_io = gptimer1.io;\n    interface gptimer2_io = gptimer2.io;\n    interface gptimer3_io = gptimer3.io;\n\n    method sb_ext_interrupt = wr_sb_ext_interrupt;\n    interface gpio_io= gpio.io;\n    method Action interrupts(Bit#(`ExtIntWidth) inp);\n      wr_external_interrupts<= inp;\n    endmethod\n    interface pinmuxtop_iocell_side = pinmuxtop.pinmuxaxi4lite_iocell_side;\n    interface pinmuxtop_peripheral_side = pinmuxtop.pinmuxaxi4lite_peripheral_side;\n    interface slave= c2s_xactor.axi_side;\n"
+- file: '{board_dir}/spi_cluster.bsv'
+  hunks:
+  - find: "      slave_num =  `SPI0_slave_num;\n    else if(addr>= `SPI1Base && addr<= `SPI1End )\n      slave_num =  `SPI1_slave_num;\n    /*else if(addr>= `SPI2Base && addr<= `SPI2End )\n      slave_num =  `SPI2_slave_num;*/\n    else\n      slave_num = `SPICluster_err_slave_num;\n      \n"
+    replace: "      slave_num =  `SPI0_slave_num;\n    else if(addr>= `SPI1Base && addr<= `SPI1End )\n      slave_num =  `SPI1_slave_num;\n    else\n      slave_num = `SPICluster_err_slave_num;\n      \n"
+  - find: "  interface Ifc_spi_cluster;\n    interface Ifc_sspi_io spi0_io;\n    interface Ifc_sspi_io spi1_io;\n//    interface Ifc_sspi_io spi2_io;\n    (*always_ready, always_enabled*)\n    method Bit#(1) spi0_sb_interrupt;\n    (*always_ready, always_enabled*)\n"
+    replace: "  interface Ifc_spi_cluster;\n    interface Ifc_sspi_io spi0_io;\n    interface Ifc_sspi_io spi1_io;\n    (*always_ready, always_enabled*)\n    method Bit#(1) spi0_sb_interrupt;\n    (*always_ready, always_enabled*)\n"
+  - find: "                                                    fabric <- mkAXI4_Lite_Fabric(fn_slave_map);\n    let spi0 <- mkspi();\n    let spi1 <- mkspi();\n//    let spi2 <- mkspi();\n    Ifc_err_slave_axi4lite#(`paddr, `buswidth, `USERSPACE ) err_slave <- mkerr_slave_axi4lite;\n   \t\n   \tmkConnection(c2m_xactor.axi_side, fabric.v_from_masters[0]);\n"
+    replace: "                                                    fabric <- mkAXI4_Lite_Fabric(fn_slave_map);\n    let spi0 <- mkspi();\n    let spi1 <- mkspi();\n    Ifc_err_slave_axi4lite#(`paddr, `buswidth, `USERSPACE ) err_slave <- mkerr_slave_axi4lite;\n   \t\n   \tmkConnection(c2m_xactor.axi_side, fabric.v_from_masters[0]);\n"
+  - find: "\t\t\n \t  mkConnection (fabric.v_to_slaves [`SPI0_slave_num ],spi0.slave);\n \t  mkConnection (fabric.v_to_slaves [`SPI1_slave_num ],spi1.slave);\n// \t  mkConnection (fabric.v_to_slaves [`SPI2_slave_num ],spi2.slave);\n    mkConnection (fabric.v_to_slaves [`SPICluster_err_slave_num ] , err_slave.slave);\n\n    interface spi0_io=spi0.io;\n    interface spi1_io=spi1.io;\n    method spi0_sb_interrupt = spi0.sb_sspi_interrupt;\n    method spi1_sb_interrupt = spi1.sb_sspi_interrupt;\n//    interface spi2_io=spi2.io;\n    interface slave= c2s_xactor.axi_side;\n  endmodule\nendpackage\n"
+    replace: "\t\t\n \t  mkConnection (fabric.v_to_slaves [`SPI0_slave_num ],spi0.slave);\n \t  mkConnection (fabric.v_to_slaves [`SPI1_slave_num ],spi1.slave);\n    mkConnection (fabric.v_to_slaves [`SPICluster_err_slave_num ] , err_slave.slave);\n\n    interface spi0_io=spi0.io;\n    interface spi1_io=spi1.io;\n    method spi0_sb_interrupt = spi0.sb_sspi_interrupt;\n    method spi1_sb_interrupt = spi1.sb_sspi_interrupt;\n    interface slave= c2s_xactor.axi_side;\n  endmodule\nendpackage\n"
+- file: '{board_dir}/constraints.xdc'
+  hunks:
+  - find: '## - rename the used ports (in each line, after get_ports) according to the top level signal names in the project
+
+
+      set_property CLOCK_DEDICATED_ROUTE BACKBONE [get_nets sys_clk_IBUF]
+
+
+      set_property -dict { PACKAGE_PIN G4  IOSTANDARD LVCMOS15 } [get_ports { sys_rst }]; #IO_L12N_T1_MRCC_35 Sch=cpu_resetn
+
+
+      '
+    replace: '## - rename the used ports (in each line, after get_ports) according to the top level signal names in the project
+
+
+      set_property CLOCK_DEDICATED_ROUTE BACKBONE [get_nets sys_clk_IBUF]
+
+      # external_clk (AB20 = ja[3]) is a plain I/O pin, not a clock-capable (MRCC/SRCC)
+
+      # one, but it drives a clock net (CLK_ext_clk -> gptimer0..3, and rtc0/rtc1 +
+
+      # gptimer4 when those IPs are enabled). Vivado treats a non-CC pin sourcing a
+
+      # clock as a placer ERROR and aborts bitstream generation; FALSE demotes it to a
+
+      # warning and routes the net on general fabric. Needed in the pristine tree too,
+
+      # which is why it lives in the board source rather than in any one IP def.
+
+      set_property CLOCK_DEDICATED_ROUTE FALSE [get_nets external_clk_IBUF]
+
+
+      set_property -dict { PACKAGE_PIN G4  IOSTANDARD LVCMOS15 } [get_ports { sys_rst }]; #IO_L12N_T1_MRCC_35 Sch=cpu_resetn
+
+
+      '

@@ -1,0 +1,34 @@
+# Centralized config file for Peripheral Automation
+# Add new peripherals to the `automated_peripherals` list without modifying Python code.
+# Location: gc2025/hw/soc_build_config.yaml
+
+target_board: "nexys_video"
+board_dir: boards/nexys_video
+pin_map_path: "boards/nexys_video/pin_map.yaml"
+
+automated_peripherals:
+  - name: "rtc_v1"
+    def_path: "ip_bsv/rtc_v1/rtc_v1.yaml"
+    context:
+      slave_id_macro: "RTC_slave_num"
+      slave_id_val: "10"
+      base_macro: "RTCBase"
+      base_addr: "0004_0600"
+      end_macro: "RTCEnd"
+      end_addr: "0004_06FF"
+      plic_source: "rtc.rtc_sb_interrupt"
+      plic_position: "msb"  # Options: "msb" (front), "lsb" (end), or integer index (0-based from MSB)
+      
+      # Verilog boundary configuration for RTC output signal
+      verilog_port_name: "rtc_out_pmod"            # Top-level FPGA pin name
+      verilog_wire_name: "wire_rtc_out"            # Internal wire name
+      verilog_clk_source: "external_clk"           # Crysrtal oscillator source for RTC
+      verilog_buffer_type: "IOBUF"                 # Buffer primitive (IOBUF/OBUF)
+      verilog_buffer_tristate: "1'b0"              # 0=output-enable, 1=input-enable
+      rtc_io_port_name: "rtc_io_rtc_clock_signal"  # BSV interface.method port name
+
+      # XDC constraint context
+      xdc_file: "{board_dir}/constraints.xdc"  # Target constraints file
+      rtc_pin_board_pin: "ja[10]"              # Desired board pin for RTC output
+      rtc_pin_fallback: "fmc_la_n[06]"         # If ja[10] taken, move original here
+      additional_properties: "set_property CLOCK_DEDICATED_ROUTE FALSE [get_nets {verilog_clk_source}_IBUF]"

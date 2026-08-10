@@ -1,0 +1,202 @@
+# Centralized config file for Peripheral Automation
+# CONFIG 3 (directory gc2025_autop3_2)
+# Peripherals: UART3 (no pinmux) x1, I2C2+I2C3, SPI2+SPI3, GPTimer4+GPTimer5, GPIO 32..47 (16)
+# NOTE (capacity): GPTimer is now x2 (gptimer4 + gptimer5, the newly-added 2nd timer).
+#   I2C ships x2 (I2C2/I2C3): the mixed-cluster I2C address map defines I2C0..I2C3
+#   only, so a 3rd ADDED I2C (I2C4) would need a new baseline window; not added here.
+
+target_board: nexys_video
+board_dir: boards/nexys_video
+pin_map_path: boards/nexys_video/pin_map.yaml
+
+
+automated_peripherals:
+- name: uart_v1
+  # UART3 routed WITHOUT the pinmux (dedicated FMC-LA pins). Unified UART def.
+  modes:
+    with_pinmux:    ip_bsv/uart_v1/uart_v1.yaml
+    without_pinmux: ip_bsv/uart_v1/uart_v1.yaml
+  base_context:
+      xdc_file: '{board_dir}/constraints.xdc'
+  instances:
+      - instance_id: '3'
+        uart_mode: without_pinmux
+        connect_to_plic: true
+        slave_id_macro: UART3_slave_num
+        base_macro: UART3Base
+        base_addr: '0001_1600'
+        end_macro: UART3End
+        end_addr: '0001_1640'
+        uart_rx_pin: fmc_la_p[07]
+        uart_tx_pin: fmc_la_n[07]
+        uart_rx_fallback: fmc_la_p[08]
+        uart_tx_fallback: fmc_la_n[08]
+        uart_io_standard: LVCMOS12
+
+- name: gpio_v1
+  # Extend on-chip GPIO 32 -> 48 (16 new lines gpio_32..gpio_47).
+  def_path: ip_bsv/gpio_v1/gpio_v1.yaml
+  base_context:
+    xdc_file: '{board_dir}/constraints.xdc'
+    gpio_io_standard: LVCMOS12
+    gpio_width: 48
+  instances:
+  - instance_id: '32'
+    gpio_pin: fmc_la_n[16]
+    gpio_fallback: fmc_la_n[26]
+  - instance_id: '33'
+    gpio_pin: fmc_la_p[16]
+    gpio_fallback: fmc_la_p[26]
+  - instance_id: '34'
+    gpio_pin: fmc_la_n[15]
+    gpio_fallback: fmc_la_n[25]
+  - instance_id: '35'
+    gpio_pin: fmc_la_p[15]
+    gpio_fallback: fmc_la_p[25]
+  - instance_id: '36'
+    gpio_pin: fmc_la_n[14]
+    gpio_fallback: fmc_la_n[24]
+  - instance_id: '37'
+    gpio_pin: fmc_la_p[14]
+    gpio_fallback: fmc_la_p[24]
+  - instance_id: '38'
+    gpio_pin: fmc_la_n[13]
+    gpio_fallback: fmc_la_n[23]
+  - instance_id: '39'
+    gpio_pin: fmc_la_p[13]
+    gpio_fallback: fmc_la_p[23]
+  - instance_id: '40'
+    gpio_pin: fmc_la_n[12]
+    gpio_fallback: fmc_la_n[22]
+  - instance_id: '41'
+    gpio_pin: fmc_la_p[12]
+    gpio_fallback: fmc_la_p[22]
+  - instance_id: '42'
+    gpio_pin: fmc_la_n[11]
+    gpio_fallback: fmc_la_n[21]
+  - instance_id: '43'
+    gpio_pin: fmc_la_p[11]
+    gpio_fallback: fmc_la_p[21]
+  - instance_id: '44'
+    gpio_pin: fmc_la_n[10]
+    gpio_fallback: fmc_la_n[20]
+  - instance_id: '45'
+    gpio_pin: fmc_la_p[10]
+    gpio_fallback: fmc_la_p[20]
+  - instance_id: '46'
+    gpio_pin: fmc_la_n[09]
+    gpio_fallback: fmc_la_n[19]
+  - instance_id: '47'
+    gpio_pin: fmc_la_p[09]
+    gpio_fallback: fmc_la_p[19]
+
+- name: i2c_v1
+  # Two ADDITIONAL direct-routed I2C controllers (I2C2, I2C3).
+  def_path: ip_bsv/i2c_v1/i2c_v1.yaml
+  base_context:
+    xdc_file: '{board_dir}/constraints.xdc'
+    io_standard: LVCMOS12
+  instances:
+  - instance_id: '2'
+    slave_id_macro: I2C2_slave_num
+    base_macro: I2C2Base
+    base_addr: '0004_1600'
+    end_macro: I2C2End
+    end_addr: '0004_16FF'
+    connect_to_plic: true
+    plic_index: 38
+    sda_pin: fmc_la_p[27]
+    scl_pin: fmc_la_n[27]
+    sda_fallback: fmc_la_p[29]
+    scl_fallback: fmc_la_n[29]
+  - instance_id: '3'
+    slave_id_macro: I2C3_slave_num
+    base_macro: I2C3Base
+    base_addr: '0004_1700'
+    end_macro: I2C3End
+    end_addr: '0004_17FF'
+    connect_to_plic: true
+    plic_index: 39
+    sda_pin: fmc_la_p[28]
+    scl_pin: fmc_la_n[28]
+    sda_fallback: fmc_la_p[30]
+    scl_fallback: fmc_la_n[30]
+
+- name: gptimer_v1
+  # Two ADDITIONAL direct-connected general-purpose timers (gptimer4, gptimer5).
+  # The gptimer def is instance-parametric, so a 2nd added timer is just another
+  # instance entry (new address window + auto-allocated cluster slot).
+  def_path: ip_bsv/gptimer_v1/gptimer_v1.yaml
+  base_context:
+    xdc_file: '{board_dir}/constraints.xdc'
+    gptimer_io_standard: LVCMOS12
+  instances:
+  - instance_id: '4'
+    slave_id_macro: GPTimer4_slave_num
+    base_macro: GPTimer4Base
+    base_addr: '0004_0800'
+    end_macro: GPTimer4End
+    end_addr: '0004_08FF'
+    connect_to_plic: true
+    plic_index: 42
+    gptimer_in_pin: fmc_la17_cc_n
+    gptimer_out_pin: fmc_la18_cc_n
+    gptimer_in_fallback: fmc_la_n[06]
+    gptimer_out_fallback: fmc_la_n[08]
+  - instance_id: '5'
+    slave_id_macro: GPTimer5_slave_num
+    base_macro: GPTimer5Base
+    base_addr: '0004_0A00'          # free window above GPTimer4End (0004_08FF)
+    end_macro: GPTimer5End
+    end_addr: '0004_0AFF'
+    connect_to_plic: true
+    plic_index: 44                   # unique (gptimer4=42)
+    gptimer_in_pin: fmc_la_p[06]
+    gptimer_out_pin: fmc_la_n[06]
+    gptimer_in_fallback: fmc_la_p[08]
+    gptimer_out_fallback: fmc_la18_cc_p
+
+- name: sspi_v1
+  # Two ADDITIONAL direct-connected SSPI controllers (SPI2, SPI3). Their interrupt
+  # bus bits (14, 15) assume UART3 is present to grow the bus to Bit#(14) first --
+  # UART3 IS included above, so this holds.
+  def_path: ip_bsv/sspi_v1/sspi_v1.yaml
+  base_context:
+    xdc_file: '{board_dir}/constraints.xdc'
+    verilog_buffer_type: IOBUF
+    spi_io_standard: LVCMOS12
+  instances:
+  - instance_id: '2'
+    slave_id_macro: SPI2_slave_num
+    base_macro: SPI2Base
+    base_addr: '0002_0200'
+    end_macro: SPI2End
+    end_addr: '0002_02FF'
+    connect_to_plic: true
+    plic_index: 40
+    ext_int_bit: 14
+    mosi_pin: fmc_la_p[02]
+    miso_pin: fmc_la_n[02]
+    nss_pin: fmc_la_p[03]
+    sclk_pin: fmc_la_n[03]
+    mosi_fallback: fmc_la_p[31]
+    miso_fallback: fmc_la_n[31]
+    nss_fallback: fmc_la_p[32]
+    sclk_fallback: fmc_la_n[32]
+  - instance_id: '3'
+    slave_id_macro: SPI3_slave_num
+    base_macro: SPI3Base
+    base_addr: '0002_0300'
+    end_macro: SPI3End
+    end_addr: '0002_03FF'
+    connect_to_plic: true
+    plic_index: 41
+    ext_int_bit: 15
+    mosi_pin: fmc_la_p[04]
+    miso_pin: fmc_la_n[04]
+    nss_pin: fmc_la_p[05]
+    sclk_pin: fmc_la_n[05]
+    mosi_fallback: fmc_la_p[33]
+    miso_fallback: fmc_la_n[33]
+    nss_fallback: fmc_la17_cc_p
+    sclk_fallback: fmc_la18_cc_p

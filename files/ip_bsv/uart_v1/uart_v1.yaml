@@ -1,0 +1,494 @@
+name: "uart_v1"
+# Unified with/without-pinmux def. A config using plain `def_path` (no `modes:`)
+# gets this default; configs that declare `modes:` pick the mode per instance.
+default_mode: "without_pinmux"
+yaml_version: "2.0"
+description: >
+  Unified UART integration def — a SINGLE file that carries BOTH routing modes.
+  The framework selects which patches apply from the per-instance mode value
+  (uart_mode: with_pinmux | without_pinmux). Patches with no `mode:` are the
+  shared core (Soc.defines slave map + uart_cluster wiring) and always apply;
+  patches tagged `mode: with_pinmux` add the pinmux cell-mux arms/rules and the
+  Soc.bsv pinmux routing; patches tagged `mode: without_pinmux` export uart{N}_io
+  on chip_io with dedicated fpga_top pins, TbSoc wiring and XDC constraints.
+
+    with pinmux    : Soc.bsv routes uart{N} through
+                     mixed_cluster.pinmuxtop_peripheral_side.uart{N}; pinmux.bsv
+                     gains cell mux arms/rules; no new fpga_top.v ports.
+    without pinmux : Soc.bsv exports chip_io.uart{N}_io directly; fpga_top.v gains
+                     dedicated uart{N}_SIN/uart{N}_SOUT ports; constraints.xdc pins
+                     them; TbSoc.bsv wires uart{N}. pinmux.bsv is NOT touched.
+
+  PARAMETRIC: the shared core templates on {instance_id} + explicit per-instance
+  address macros ({base_macro}/{base_addr}/{end_macro}/{end_addr}/{slave_id_macro}),
+  and the cluster slave slot is auto-allocated ({allocated_slot}) exactly like i2c
+  / rtc. So more than one added UART composes (e.g. UART3 pinmux + UART4 dedicated).
+
+  connect_to_plic: every interrupt-routing patch below is `plic_gated`, so
+  `connect_to_plic: false` drops this UART's interrupt from the bus AND its width
+  accounting (uart_interrupts width, ExtIntWidth/ExtIntMsb, PLICWidth). NOTE the
+  interrupt width step is +1 (Bit#(3)->Bit#(4)); the framework supports ONE
+  PLIC-routed added UART. Additional added UARTs must set connect_to_plic: false
+  (their AXI slave + pins still work; only the interrupt line is left unrouted).
+  The with_pinmux cell arms are bound to the board's cell12/cell13 mux, so the
+  with_pinmux mode is intended for the single designated pinmux UART (instance 3).
+
+anchors:
+  # === SOC.DEFINES (shared core) ===
+  soc_defines_num_slaves:
+    file: "{board_dir}/Soc.defines"
+    pattern: '^`define\s+UARTCluster_Num_Slaves\s+\d+'
+    position: "replace"
+
+  soc_defines_err_slave:
+    file: "{board_dir}/Soc.defines"
+    pattern: '^`define\s+UARTCluster_err_slave_num\s+\d+'
+    position: "replace"
+
+  # Insert this instance's address window AFTER the pristine UART2End line
+  # (UART2End itself is unchanged), so multiple UARTs each add their own window.
+  soc_defines_memory:
+    file: "{board_dir}/Soc.defines"
+    pattern: "^`define UART2End\\s+'h0001_1540"
+    position: "after"
+
+  # One-time widen of the outer slow-fabric UART window to cover UART3+UART4.
+  soc_defines_cluster_end:
+    file: "{board_dir}/Soc.defines"
+    pattern: "^`define\\s+UARTClusterEnd\\s+'h0001_1540"
+    position: "replace"
+
+  soc_defines_extint_width:
+    file: "{board_dir}/Soc.defines"
+    pattern: '^`define\s+ExtIntWidth\s+\d+'
+    position: "replace"
+
+  soc_defines_extint_msb:
+    file: "{board_dir}/Soc.defines"
+    pattern: '^`define\s+ExtIntMsb\s+\d+'
+    position: "replace"
+
+  soc_defines_plic_width:
+    file: "{board_dir}/Soc.defines"
+    pattern: '^`define\s+PLICWidth\s+\d+'
+    position: "replace"
+
+  # === UART_CLUSTER.BSV (shared core) ===
+  uart_cluster_interface_decl:
+    file: "{board_dir}/uart_cluster.bsv"
+    pattern: 'interface RS232 uart2_io;'
+    position: "after"
+
+  uart_cluster_interrupt_width_decl:
+    file: "{board_dir}/uart_cluster.bsv"
+    pattern: 'method Bit#\(3\) uart_interrupts;'
+    position: "replace"
+
+  uart_cluster_interrupt_width_impl:
+    file: "{board_dir}/uart_cluster.bsv"
+    pattern: 'method Bit#\(3\) uart_interrupts;'
+    position: "replace"
+    multiline: true
+
+  uart_cluster_instantiation:
+    file: "{board_dir}/uart_cluster.bsv"
+    pattern: 'let uart2 <- mkuart\(\);'
+    position: "after"
+
+  uart_cluster_addr_decoder:
+    file: "{board_dir}/uart_cluster.bsv"
+    pattern: 'slave_num =\s+`UART2_slave_num;'
+    position: "after"
+
+  uart_cluster_axi_conn:
+    file: "{board_dir}/uart_cluster.bsv"
+    pattern: 'mkConnection \(fabric\.v_to_slaves \[`UART2_slave_num \],uart2\.slave\);'
+    position: "after"
+
+  uart_cluster_interface_wire:
+    file: "{board_dir}/uart_cluster.bsv"
+    pattern: 'interface uart2_io=uart2\.io;'
+    position: "after"
+
+  # Rewrite the return concat to prepend this UART's interrupt at the MSB. Only
+  # the single PLIC-routed added UART reaches this patch (plic_gated), so a REPLACE
+  # is unambiguous; additional UARTs are connect_to_plic:false and skip it.
+  uart_cluster_interrupt_return:
+    file: "{board_dir}/uart_cluster.bsv"
+    pattern: 'return \{uart2\.interrupt, uart1\.interrupt, uart0\.interrupt\};'
+    position: "replace"
+
+  # === PINMUX.BSV (mode: with_pinmux only) ===
+  pinmux_wire_decl:
+    file: "{board_dir}/pinmux.bsv"
+    pattern: 'Wire#\(Bit#\(1\)\) wruart2_tx<-mkDWire\(0\);'
+    position: "after"
+
+  pinmux_interface_decl:
+    file: "{board_dir}/pinmux.bsv"
+    pattern: 'interface PeripheralSideUART uart2;'
+    position: "after"
+
+  pinmux_cell12_rx_mux:
+    file: "{board_dir}/pinmux.bsv"
+    pattern: 'wrcell12_mux==1\?val0: // unused'
+    position: "replace"
+
+  pinmux_cell13_tx_mux:
+    file: "{board_dir}/pinmux.bsv"
+    pattern: 'wrcell13_mux==1\?val0: // unused'
+    position: "replace"
+
+  pinmux_cell12_rule:
+    file: "{board_dir}/pinmux.bsv"
+    pattern: 'rule assign_wr_on_cell12_1\(wrcell12_mux==1\);\s*\n\s*wrgpioa_a5_in<=val0;\s*\n\s*endrule'
+    position: "replace"
+    multiline: true
+
+  pinmux_cell13_rule:
+    file: "{board_dir}/pinmux.bsv"
+    pattern: 'rule assign_wr_on_cell13_1\(wrcell13_mux==1\);\s*\n\s*wrgpioa_a6_in<=val0;\s*\n\s*endrule'
+    position: "replace"
+    multiline: true
+
+  pinmux_peripheral_impl:
+    file: "{board_dir}/pinmux.bsv"
+    pattern: 'interface uart2 = interface PeripheralSideUART[\s\S]*?return wruart2_rx;\s*endmethod\s*endinterface;\s*endinterface;'
+    position: "after"
+    multiline: true
+
+  # === SOC.BSV (mode: with_pinmux only) ===
+  soc_bsv_tx_conn:
+    file: "{board_dir}/Soc.bsv"
+    pattern: 'mixed_cluster\.pinmuxtop_peripheral_side\.uart2\.tx\.put\(uart_cluster\.uart2_io\.sout\);'
+    position: "after"
+
+  soc_bsv_rx_conn:
+    file: "{board_dir}/Soc.bsv"
+    pattern: 'uart_cluster\.uart2_io\.sin\(pinmux_uart2_rx\);'
+    position: "after"
+
+  # === SOC.BSV (mode: without_pinmux only) ===
+  soc_bsv_chip_io_decl:
+    file: "{board_dir}/Soc.bsv"
+    pattern: 'interface RS232 uart0_io;'
+    position: "after"
+
+  soc_bsv_chip_io_export:
+    file: "{board_dir}/Soc.bsv"
+    pattern: 'interface uart0_io = uart_cluster\.uart0_io;'
+    position: "after"
+
+  # === FPGA_TOP.V (mode: without_pinmux only) ===
+  fpga_top_port_decl:
+    file: "{board_dir}/fpga_top.v"
+    pattern: 'output\s+uart0_SOUT,'
+    position: "after"
+
+  fpga_top_soc_inst:
+    file: "{board_dir}/fpga_top.v"
+    pattern: '\.uart0_io_SOUT\(uart0_SOUT\),'
+    position: "after"
+
+  # === TBSOC.BSV (mode: without_pinmux only) ===
+  tbsoc_instantiation:
+    file: "{board_dir}/TbSoc.bsv"
+    pattern: 'UserInterface#\(`paddr,`buswidth,16\) uart2 <- mkuart_user\(5,0,0\);'
+    position: "after"
+
+  tbsoc_tx_path:
+    file: "{board_dir}/TbSoc.bsv"
+    pattern: 'soc\.chip_io\.uart0_io\.sin\(uart0\.io\.sout\);'
+    position: "after"
+
+  tbsoc_rx_path:
+    file: "{board_dir}/TbSoc.bsv"
+    pattern: 'uart0\.io\.sin\(soc\.chip_io\.uart0_io\.sout\);'
+    position: "after"
+
+  # === CONSTRAINTS.XDC (mode: without_pinmux only) ===
+  xdc_pin_assign:
+    type: "xdc_pin_assign"
+    file: "{xdc_file}"
+
+patches:
+  # ---- Soc.defines: derived interrupt-bus / PLIC sizing (plic_gated) ----
+  # Guarded on {base_macro}, which the soc_defines_memory patch writes. Listed
+  # BEFORE it so a first run still sees a pristine Soc.defines and fires.
+  - anchor_ref: "soc_defines_extint_width"
+    code: "`define ExtIntWidth {calculated_val}"
+    skip_if_contains: "`define {base_macro}"
+    apply_once: true
+    type: "cluster_config"
+    target_macro: "ExtIntWidth"
+    increment_by_instances: true
+    plic_gated: true
+
+  - anchor_ref: "soc_defines_extint_msb"
+    code: "`define ExtIntMsb {calculated_val}"
+    skip_if_contains: "`define {base_macro}"
+    apply_once: true
+    type: "cluster_config"
+    target_macro: "ExtIntMsb"
+    increment_by_instances: true
+    plic_gated: true
+
+  - anchor_ref: "soc_defines_plic_width"
+    code: "`define PLICWidth {calculated_val}"
+    skip_if_contains: "`define {base_macro}"
+    apply_once: true
+    type: "cluster_config"
+    target_macro: "PLICWidth"
+    increment_by_instances: true
+    plic_gated: true
+
+  # ---- Soc.defines: cluster slave count + slot + this instance's window ----
+  - anchor_ref: "soc_defines_num_slaves"
+    code: "`define UARTCluster_Num_Slaves {calculated_val}"
+    skip_if_contains: "`define {slave_id_macro}"
+    apply_once: true
+    type: "cluster_config"
+    target_macro: "UARTCluster_Num_Slaves"
+    increment_by_instances: true
+
+  - anchor_ref: "soc_defines_err_slave"
+    code: |
+      `define {slave_id_macro} {allocated_slot}
+      `define UARTCluster_err_slave_num {calculated_val}
+    skip_if_contains: "`define {slave_id_macro}"
+    type: "cluster_config"
+    target_macro: "UARTCluster_err_slave_num"
+    increment_by_instances: true
+    apply_once: true
+
+  - anchor_ref: "soc_defines_memory"
+    code: |
+      {base_macro}     'h{base_addr}
+      {end_macro}      'h{end_addr}
+    skip_if_contains: "`define {base_macro}"
+    instance_aware: true
+
+  # One-time widen the slow-fabric UART cluster window (covers UART3 + UART4).
+  - anchor_ref: "soc_defines_cluster_end"
+    code: "`define UARTClusterEnd    'h0001_1740"
+    skip_if_matches: "`define\\s+UARTClusterEnd\\s+'h0001_1740"
+    apply_once: true
+
+  # ---- uart_cluster.bsv (shared core, parametric) ----
+  - anchor_ref: "uart_cluster_interface_decl"
+    code: "interface RS232 uart{instance_id}_io;"
+    skip_if_contains: "uart{instance_id}_io"
+    instance_aware: true
+    indent_context: "interface_body"
+
+  # Interrupt method width: 3 -> 4 for the single PLIC-routed added UART.
+  - anchor_ref: "uart_cluster_interrupt_width_decl"
+    code: "method Bit#(4) uart_interrupts;"
+    skip_if_contains: "Bit#(4) uart_interrupts"
+    apply_once: true
+    indent_context: "interface_body"
+    plic_gated: true
+
+  - anchor_ref: "uart_cluster_interrupt_width_impl"
+    code: "method Bit#(4) uart_interrupts;"
+    skip_if_matches: 'method Bit#\(4\) uart_interrupts;\s*\n\s*return \{'
+    apply_once: true
+    indent_context: "module_body"
+    plic_gated: true
+
+  - anchor_ref: "uart_cluster_instantiation"
+    code: "let uart{instance_id} <- mkuart();"
+    skip_if_contains: "let uart{instance_id} <-"
+    instance_aware: true
+    indent_context: "module_body"
+
+  - anchor_ref: "uart_cluster_addr_decoder"
+    code: |
+      else if(addr>= `{base_macro} && addr<= `{end_macro} )
+        slave_num = `{slave_id_macro};
+    skip_if_contains: "`{base_macro}"
+    instance_aware: true
+    indent_context: "function_body"
+
+  - anchor_ref: "uart_cluster_axi_conn"
+    code: "mkConnection (fabric.v_to_slaves [`{slave_id_macro} ],uart{instance_id}.slave);"
+    skip_if_contains: "uart{instance_id}.slave"
+    instance_aware: true
+    indent_context: "module_body"
+
+  - anchor_ref: "uart_cluster_interface_wire"
+    code: "interface uart{instance_id}_io=uart{instance_id}.io;"
+    skip_if_contains: "uart{instance_id}_io=uart{instance_id}.io"
+    instance_aware: true
+    indent_context: "module_body"
+
+  # Rewrite the return concat, prepending this UART's interrupt at the MSB.
+  # NOTE the literal BSV concat braces are DOUBLED ({{ }}) so resolve_template's
+  # str.format() treats them as literals and still substitutes {instance_id}.
+  - anchor_ref: "uart_cluster_interrupt_return"
+    code: "return {{uart{instance_id}.interrupt, uart2.interrupt, uart1.interrupt, uart0.interrupt}};"
+    skip_if_contains: "uart{instance_id}.interrupt"
+    apply_once: true
+    indent_context: "method_body"
+    plic_gated: true
+
+  # ---- pinmux.bsv (mode: with_pinmux) ----
+  - anchor_ref: "pinmux_wire_decl"
+    code: |
+      Wire#(Bit#(1)) wruart{instance_id}_tx<-mkDWire(0);
+      Wire#(Bit#(1)) wruart{instance_id}_rx<-mkDWire(0);
+    skip_if_contains: "wruart{instance_id}_tx"
+    apply_once: true
+    indent_context: "pinmux_module_body"
+    mode: with_pinmux
+
+  - anchor_ref: "pinmux_interface_decl"
+    code: "interface PeripheralSideUART uart{instance_id};"
+    skip_if_contains: "PeripheralSideUART uart{instance_id}"
+    apply_once: true
+    indent_context: "pinmux_interface_body"
+    mode: with_pinmux
+
+  - anchor_ref: "pinmux_cell12_rx_mux"
+    code: "wrcell12_mux==1?val1: // uart{instance_id}_rx is an input"
+    skip_if_contains: "wrcell12_mux==1?val1:"
+    apply_once: true
+    indent_context: "mux_option"
+    mode: with_pinmux
+
+  - anchor_ref: "pinmux_cell13_tx_mux"
+    code: "wrcell13_mux==1?wruart{instance_id}_tx: // uart{instance_id}_tx is an output"
+    skip_if_contains: "wrcell13_mux==1?wruart{instance_id}_tx:"
+    apply_once: true
+    indent_context: "mux_option"
+    mode: with_pinmux
+
+  - anchor_ref: "pinmux_cell12_rule"
+    code: |
+      rule assign_wruart{instance_id}_rx_on_cell12(wrcell12_mux==1);
+        wruart{instance_id}_rx<=cell12_mux_in;
+      endrule
+    skip_if_contains: "wruart{instance_id}_rx<=cell12_mux_in"
+    apply_once: true
+    indent_context: "pinmux_module_body"
+    mode: with_pinmux
+
+  - anchor_ref: "pinmux_cell13_rule"
+    code: |
+      rule assign_wruart{instance_id}_tx_on_cell13(wrcell13_mux==1);
+        wrgpioa_a6_in<=val0;
+      endrule
+    skip_if_contains: "assign_wruart{instance_id}_tx_on_cell13"
+    apply_once: true
+    indent_context: "pinmux_module_body"
+    mode: with_pinmux
+
+  - anchor_ref: "pinmux_peripheral_impl"
+    code: |
+      interface uart{instance_id} = interface PeripheralSideUART
+        interface tx = interface Put
+          method Action put(Bit#(1) in);
+            wruart{instance_id}_tx<=in;
+          endmethod
+        endinterface;
+        interface rx = interface Get
+          method ActionValue#(Bit#(1)) get;
+            return wruart{instance_id}_rx;
+          endmethod
+        endinterface;
+      endinterface;
+    skip_if_contains: "interface uart{instance_id} = interface PeripheralSideUART"
+    apply_once: true
+    mode: with_pinmux
+
+  # ---- Soc.bsv (mode: with_pinmux) ----
+  - anchor_ref: "soc_bsv_tx_conn"
+    code: "mixed_cluster.pinmuxtop_peripheral_side.uart{instance_id}.tx.put(uart_cluster.uart{instance_id}_io.sout);"
+    skip_if_contains: "uart{instance_id}_io.sout"
+    apply_once: true
+    indent_context: "rule_body"
+    mode: with_pinmux
+
+  - anchor_ref: "soc_bsv_rx_conn"
+    code: |
+      let pinmux_uart{instance_id}_rx <- (mixed_cluster.pinmuxtop_peripheral_side.uart{instance_id}.rx.get);
+      uart_cluster.uart{instance_id}_io.sin(pinmux_uart{instance_id}_rx);
+    skip_if_contains: "pinmux_uart{instance_id}_rx"
+    apply_once: true
+    indent_context: "rule_body"
+    mode: with_pinmux
+
+  # ---- Soc.bsv (mode: without_pinmux) — expose + export uart{N}_io directly ----
+  - anchor_ref: "soc_bsv_chip_io_decl"
+    code: "interface RS232 uart{instance_id}_io;"
+    skip_if_contains: "interface RS232 uart{instance_id}_io;"
+    apply_once: true
+    indent_context: "interface_body"
+    mode: without_pinmux
+
+  - anchor_ref: "soc_bsv_chip_io_export"
+    code: "interface uart{instance_id}_io = uart_cluster.uart{instance_id}_io;"
+    skip_if_contains: "interface uart{instance_id}_io = uart_cluster.uart{instance_id}_io;"
+    apply_once: true
+    indent_context: "module_body"
+    mode: without_pinmux
+
+  # ---- fpga_top.v (mode: without_pinmux) ----
+  - anchor_ref: "fpga_top_port_decl"
+    code: |
+      input         uart{instance_id}_SIN,
+      output        uart{instance_id}_SOUT,
+    skip_if_contains: "uart{instance_id}_SIN"
+    apply_once: true
+    mode: without_pinmux
+
+  - anchor_ref: "fpga_top_soc_inst"
+    code: |
+      .uart{instance_id}_io_SIN(uart{instance_id}_SIN),
+      .uart{instance_id}_io_SOUT(uart{instance_id}_SOUT),
+    skip_if_contains: ".uart{instance_id}_io_SIN"
+    apply_once: true
+    mode: without_pinmux
+
+  # ---- TbSoc.bsv (mode: without_pinmux) ----
+  - anchor_ref: "tbsoc_instantiation"
+    code: "UserInterface#(`paddr,`buswidth,16) uart{instance_id} <- mkuart_user(5,0,0);"
+    skip_if_contains: "uart{instance_id} <- mkuart_user"
+    apply_once: true
+    indent_context: "module_body"
+    mode: without_pinmux
+
+  - anchor_ref: "tbsoc_tx_path"
+    code: "soc.chip_io.uart{instance_id}_io.sin(uart{instance_id}.io.sout);"
+    skip_if_contains: "soc.chip_io.uart{instance_id}_io.sin"
+    apply_once: true
+    indent_context: "rule_body"
+    mode: without_pinmux
+
+  - anchor_ref: "tbsoc_rx_path"
+    code: "uart{instance_id}.io.sin(soc.chip_io.uart{instance_id}_io.sout);"
+    skip_if_contains: "uart{instance_id}.io.sin(soc.chip_io.uart{instance_id}_io.sout)"
+    apply_once: true
+    indent_context: "rule_body"
+    mode: without_pinmux
+
+  # ---- constraints.xdc (mode: without_pinmux) ----
+  - anchor_ref: "xdc_pin_assign"
+    port_name: "uart{instance_id}_SIN"
+    target_board_pin: "{uart_rx_pin}"
+    fallback_pin: "{uart_rx_fallback}"
+    io_standard: "{uart_io_standard}"
+    skip_if_contains: "get_ports uart{instance_id}_SIN"
+    type: "xdc_pin_assign"
+    instance_aware: true
+    mode: without_pinmux
+
+  - anchor_ref: "xdc_pin_assign"
+    port_name: "uart{instance_id}_SOUT"
+    target_board_pin: "{uart_tx_pin}"
+    fallback_pin: "{uart_tx_fallback}"
+    io_standard: "{uart_io_standard}"
+    skip_if_contains: "get_ports uart{instance_id}_SOUT"
+    type: "xdc_pin_assign"
+    instance_aware: true
+    mode: without_pinmux

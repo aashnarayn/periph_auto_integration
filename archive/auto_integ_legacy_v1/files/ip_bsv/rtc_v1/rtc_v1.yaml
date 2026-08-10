@@ -1,0 +1,227 @@
+# Automated Integration Prototype - IP Definition: RTC v1
+# Contains all patch instructions required to integrate this peripheral into the SoC for gc2025 (Shakti).
+# Location: gc2025/hw/ip_bsv/rtc_v1/rtc_v1.yaml
+#
+# NOTE: All file paths are relative to gc2025/hw/ and target the board directory.
+# Default board: nexys_video. Change BOARD variable in Makefile or context below for other boards.
+
+name: "rtc_v1"
+version: "1.0"
+description: "48-bit high-precision RTC with CDC handshake"
+
+patches:
+  # === 1. BSV INCLUDE PATH (hw/ root) ===
+  - file: "bsvpath"
+    anchor_pattern: "^devices/tcm$"
+    position: "after"
+    code: "ip_bsv/rtc_v1/"
+    skip_if_contains: "ip_bsv/rtc_v1/"
+
+  # === 2. SOC.DEFINES: Memory Map (board directory) ===
+  - file: "{board_dir}/Soc.defines"
+    anchor_pattern: "^`define GPTimer3End 					'h0004_05FF"
+    position: "after"
+    code: |
+      `define {base_macro}               'h{base_addr}
+      `define {end_macro}                'h{end_addr}
+    skip_if_contains: "`define {base_macro}"
+
+  # === 3. SOC.DEFINES: MixedCluster_Num_Slaves Update ===
+  - file: "{board_dir}/Soc.defines"
+    anchor_pattern: "^(`define MixedCluster_Num_Slaves)\\s+11"
+    position: "replace"
+    code: "`define MixedCluster_Num_Slaves 12"
+    skip_if_contains: "`define MixedCluster_Num_Slaves 12"
+
+  # === 4. SOC.DEFINES: MixedCluster_err_slave_num Update ===
+  - file: "{board_dir}/Soc.defines"
+    anchor_pattern: "^(`define MixedCluster_err_slave_num)\\s+10"
+    position: "replace"
+    code: |
+      `define {slave_id_macro} {slave_id_val}
+      `define MixedCluster_err_slave_num 11
+    skip_if_contains: "`define MixedCluster_err_slave_num 11"
+
+  # === 5. MIXED_CLUSTER.BSV: Import Statement ===
+  - file: "{board_dir}/mixed_cluster.bsv"
+    anchor_pattern: "^\\s*import pinmux_axi4lite\\s::\\s\\*\\s;"
+    position: "after"
+    code: "  import rtc_v1 :: *;"
+    skip_if_contains: "import rtc_v1"
+
+  # === 6. MIXED_CLUSTER.BSV: Interface Declaration ===
+  - file: "{board_dir}/mixed_cluster.bsv"
+    anchor_pattern: "^\\s*interface Ifc_mixed_cluster;"
+    position: "after"
+    code: "    (*always_ready, always_enabled*)\n    interface RTCIO rtc_io;"
+    skip_if_contains: "interface RTCIO rtc_io"
+
+  # === 7. MIXED_CLUSTER.BSV: Address Decoder ===
+  - file: "{board_dir}/mixed_cluster.bsv"
+    anchor_pattern: "slave_num = `Pinmux_slave_num;"
+    position: "after"
+    code: "    else if(addr >= `{base_macro} && addr <= `{end_macro})\n      slave_num = `{slave_id_macro};"
+    skip_if_contains: "`{base_macro}"
+
+  # === 8. MIXED_CLUSTER.BSV: Module Instantiation ===
+  - file: "{board_dir}/mixed_cluster.bsv"
+    anchor_pattern: "^\\s*let pinmuxtop <- mkpinmuxtop\\(\\);"
+    position: "after"
+    code: "    let rtc <- mkrtc(ext_clk);"
+    skip_if_contains: "let rtc <- mkrtc"
+
+  # === 9. MIXED_CLUSTER.BSV: AXI Connection ===
+  - file: "{board_dir}/mixed_cluster.bsv"
+    anchor_pattern: "mkConnection \\(fabric\\.v_to_slaves \\[`Pinmux_slave_num \\], pinmuxtop.slave\\);"
+    position: "after"
+    code: "    mkConnection (fabric.v_to_slaves [`{slave_id_macro} ], rtc.slave);"
+    skip_if_contains: "[`{slave_id_macro} ]"
+
+  # === 10. MIXED_CLUSTER.BSV: mkpinmuxtop Wrapper (NEW) ===
+  - file: "{board_dir}/mixed_cluster.bsv"
+    anchor_pattern: "\\(\\*synthesize\\*\\)\\s*\\n\\s*module mkpinmuxtop\\(Ifc_pinmux_axi4lite#\\(`paddr, `buswidth, `USERSPACE\\)\\);\\s*\\n\\s*let ifc\\(\\);\\s*\\n\\s*mkpinmux_axi4lite _temp\\(ifc\\);\\s*\\n\\s*return ifc;\\s*\\n\\s*endmodule"
+    position: "after"
+    code: "\n  (*synthesize*)\n  module mkrtc#(Clock ext_clk)(Ifc_rtc_axi4lite#(`paddr, `buswidth, `USERSPACE));\n    let ifc();\n    mkrtc_axi4lite#(ext_clk) _temp(ifc);\n    return ifc;\n  endmodule"
+    skip_if_contains: "module mkrtc#(Clock ext_clk)"
+
+  # === 11. MIXED_CLUSTER.BSV: Interface Wiring ===
+  - file: "{board_dir}/mixed_cluster.bsv"
+    anchor_pattern: "^\\s*interface gptimer3_io = gptimer3.io;"
+    position: "after"
+    code: "    interface rtc_io = rtc.io;"
+    skip_if_contains: "interface rtc_io = rtc.io"
+
+  # === 12. MIXED_CLUSTER.BSV: PLIC Vector Automation (Special Handler) ===
+  - type: "plic_vector"
+    file: "{board_dir}/mixed_cluster.bsv"
+    signal: "{plic_source}"
+    position: "{plic_position}"
+    width_anchor_pattern: "Bit\\s*#\\s*\\(\\s*(\\d+)\\s*\\)\\s+plic_inputs\\s*="
+    concat_anchor_pattern: "plic_inputs\\s*=\\s*\\{\\s*([\\s\\S]*?)\\s*\\}"
+    skip_if_contains: "{plic_source}"
+
+  # === 13. MIXED_CLUSTER.BSV: mkplic Wrapper Width ===
+  - file: "{board_dir}/mixed_cluster.bsv"
+    anchor_pattern: "module mkplic\\(Ifc_plic_axi4lite#\\(`paddr, `buswidth, `USERSPACE,\\s*\\d+"
+    position: "replace"
+    code: "module mkplic(Ifc_plic_axi4lite#(`paddr, `buswidth, `USERSPACE, {new_plic_width}"
+    skip_if_contains: "{new_plic_width}, 2, 7"
+
+  # === 14. SOC.BSV: Import Statement ===
+  - file: "{board_dir}/Soc.bsv"
+    anchor_pattern: "^\\s*import gptimer::\\*;"
+    position: "after"
+    code: "  import rtc_v1 :: *;"
+    skip_if_contains: "import rtc_v1"
+
+  # === 15. SOC.BSV: Interface Declaration (board directory) ===
+  - file: "{board_dir}/Soc.bsv"
+    anchor_pattern: "interface Ifc_gptimer_io gptimer3_io;"
+    position: "after"
+    code: "    (*always_ready, always_enabled*)\n    interface RTCIO rtc_io;"
+    skip_if_contains: "interface RTCIO rtc_io"
+
+  # === 16. SOC.BSV: Interface Wiring ===
+  - file: "{board_dir}/Soc.bsv"
+    anchor_pattern: "interface gptimer3_io = mixed_cluster\\.gptimer3_io;"
+    position: "after"
+    code: "    interface rtc_io = mixed_cluster.rtc_io;"
+    skip_if_contains: "interface rtc_io = mixed_cluster.rtc_io"
+
+  # === 17. FPGA_TOP.V: Top-Level Port Declaration ===
+  - file: "{board_dir}/fpga_top.v"
+    anchor_pattern: "output\\s+gptimer3_out\\s*,"
+    position: "after"
+    code: "    output {verilog_port_name},"
+    skip_if_contains: "output {verilog_port_name}"
+
+  # === 18. FPGA_TOP.V: Internal Wire Declaration ===
+  - file: "{board_dir}/fpga_top.v"
+    anchor_pattern: "   wire\\s+ip2intc_irpt;"
+    position: "before"
+    code: "   wire {verilog_wire_name};"
+    skip_if_contains: "wire {verilog_wire_name};"
+
+  # === 19. FPGA_TOP.V: SoC Instantiation Port Mapping ===
+  - file: "{board_dir}/fpga_top.v"
+    anchor_pattern: "\\.ext_interrupts_i\\(interrupts\\)"
+    position: "replace"
+    code: ".ext_interrupts_i(interrupts),\n        .{rtc_io_port_name}({verilog_wire_name})"
+    skip_if_contains: ".{rtc_io_port_name}({verilog_wire_name})"
+
+  # === 20. FPGA_TOP.V: IOBUF Instantiation ===
+  - file: "{board_dir}/fpga_top.v"
+    anchor_pattern: "IOBUF spi0_inst_sclk\\(.O\\(spi0_io_sclk_in_val\\) ,.IO\\(spi0_sclk\\) ,.I\\(spi0_io_sclk_out\\) ,.T\\(~spi0_io_sclk_outen\\)\\);"
+    position: "after"
+    code: "   {verilog_buffer_type} rtc_io_inst(.O(),.IO({verilog_port_name}),.I({verilog_wire_name}),.T({verilog_buffer_tristate}));"
+    skip_if_contains: "rtc_io_inst"
+
+  # === 21. XDC CONSTRAINTS: Pin Assignment with Conflict Resolution ===
+  - type: "xdc_pin_assign"
+    file: "{xdc_file}"
+    port_name: "{verilog_port_name}"           # e.g., "rtc_out_pmod"
+    target_board_pin: "{rtc_pin_board_pin}"    # e.g., "ja[10]"
+    fallback_pin: "{rtc_pin_fallback}"         # e.g., "ja[9]"
+    io_standard: "LVCMOS33"
+    # Skip if this port is already constrained to any pin
+    skip_if_contains: "get_ports {verilog_port_name}"
+
+# =============================================================================
+# ANCHOR REFERENCE (for rtc_validate.sh)
+# Run: ./ip_bsv/rtc_v1/rtc_validate.sh --pre  (before automation)
+# Run: ./ip_bsv/rtc_v1/rtc_validate.sh --post (after automation)
+# =============================================================================
+#
+# PRE-AUTOMATION ANCHORS (must exist in {board_dir}/ or hw/ root in fresh clone):
+#   bsvpath:                          "^devices/tcm$"
+#   {board_dir}/Soc.defines:          "^`define GPTimer3End[WHITESPACE]'h0004_05FF"
+#   {board_dir}/Soc.defines:          "`define MixedCluster_Num_Slaves 11"
+#   {board_dir}/Soc.defines:          "^`define MixedCluster_err_slave_num 10"
+#   {board_dir}/Soc.bsv:              "import gptimer::\*;"
+#   {board_dir}/mixed_cluster.bsv:    "import pinmux_axi4lite :: \*;"
+#   {board_dir}/mixed_cluster.bsv:    "interface Ifc_mixed_cluster;"
+#   {board_dir}/mixed_cluster.bsv:    "slave_num = `Pinmux_slave_num;"
+#   {board_dir}/mixed_cluster.bsv:    "let pinmuxtop <- mkpinmuxtop\(\);"
+#   {board_dir}/mixed_cluster.bsv:    "(\*synthesize\*)\s*\n\s*module mkpinmuxtop.*\n\s*endmodule" (multiline block)
+#   {board_dir}/mixed_cluster.bsv:    "Bit#(35) plic_inputs= {" (width may vary)
+#   {board_dir}/mixed_cluster.bsv:    "module mkplic\(Ifc_plic_axi4lite#\(`paddr, `buswidth, `USERSPACE,\s*\d+"
+#   {board_dir}/mixed_cluster.bsv:    "mkConnection \(fabric\.v_to_slaves \[`Pinmux_slave_num \], pinmuxtop\.slave\);"
+#   {board_dir}/mixed_cluster.bsv:    "interface gptimer3_io = gptimer3\.io;"
+#   {board_dir}/Soc.bsv:              "interface Ifc_gptimer_io gptimer3_io;"
+#   {board_dir}/Soc.bsv:              "interface gptimer3_io = mixed_cluster\.gptimer3_io;"
+#   {board_dir}/fpga_top.v:           "output\s+gptimer3_out\s*,"
+#   {board_dir}/fpga_top.v:           " wire\s+ip2intc_irpt;"
+#   {board_dir}/fpga_top.v:           "\.ext_interrupts_i\(interrupts\)"
+#   {board_dir}/fpga_top.v:           "IOBUF spi0_inst_sclk\(.O\(spi0_io_sclk_in_val\) ,.IO\(spi0_sclk\) ,.I\(spi0_io_sclk_out\) ,.T\(~spi0_io_sclk_outen\)\);"
+#
+# POST-AUTOMATION EXPECTATIONS (verified in {board_dir}/ after patching):
+#   bsvpath:                          "ip_bsv/rtc_v1/" appended
+#   {board_dir}/Soc.defines:          RTCBase, RTCEnd defined
+#   {board_dir}/Soc.defines:          MixedCluster_Num_Slaves=12, RTC_slave_num=10, err_slave_num=11
+#   {board_dir}/Soc.bsv:              import rtc_v1 :: *; added
+#   {board_dir}/mixed_cluster.bsv:    import rtc_v1 :: *; added
+#   {board_dir}/mixed_cluster.bsv:    interface RTCIO rtc_io; declared
+#   {board_dir}/mixed_cluster.bsv:    address decoder rule for RTCBase-RTCEnd
+#   {board_dir}/mixed_cluster.bsv:    let rtc <- mkrtc(ext_clk); instantiated
+#   {board_dir}/mixed_cluster.bsv:    (*synthesize*) module mkrtc#(Clock ext_clk) wrapper added
+#   {board_dir}/mixed_cluster.bsv:    PLIC vector width incremented, rtc.rtc_sb_interrupt inserted at MSB
+#   {board_dir}/mixed_cluster.bsv:    mkplic wrapper width param updated dynamically via {new_plic_width}
+#   {board_dir}/mixed_cluster.bsv:    AXI connection for RTC_slave_num wired
+#   {board_dir}/mixed_cluster.bsv:    interface rtc_io = rtc.io; mapped
+#   {board_dir}/Soc.bsv:              interface RTCIO rtc_io declared
+#   {board_dir}/Soc.bsv:              interface rtc_io = mixed_cluster.rtc_io; wired
+#   {board_dir}/fpga_top.v:           rtc_out_pmod port declared
+#   {board_dir}/fpga_top.v:           wire wire_rtc_out; declared
+#   {board_dir}/fpga_top.v:           .rtc_io_rtc_clock_signal(wire_rtc_out) mapped
+#   {board_dir}/fpga_top.v:           IOBUF rtc_io_inst instantiated
+#   {board_dir}/fpga_top.v:           IOBUF rtc_io_inst instantiated
+#
+# === PATCH 21: XDC CONSTRAINTS (Pre/Post) ===
+# PRE-AUTOMATION ANCHORS:
+#   {board_dir}/pin_map.yaml:         "{rtc_pin_board_pin}:" (target pin exists in map)
+#   {board_dir}/pin_map.yaml:         "{rtc_pin_fallback}:" (fallback pin exists in map)
+#   {board_dir}/constraints.xdc:      "get_ports {verilog_port_name}" NOT present (idempotency)
+#
+# POST-AUTOMATION EXPECTATIONS:
+#   {board_dir}/constraints.xdc:      "set_property PACKAGE_PIN.*\[get_ports {verilog_port_name}\]" appended
+#   {board_dir}/constraints.xdc:      If conflict occurred: "set_property PACKAGE_PIN.*\[get_ports {original_port}\]" for fallback

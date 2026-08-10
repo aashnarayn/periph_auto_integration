@@ -1,0 +1,236 @@
+name: "gpio_v1"
+yaml_version: "2.0"
+description: >
+  Extend the on-chip GPIO from 32 to 48 lines and expose the 16 new lines
+  (gpio_32 .. gpio_47) as dedicated bidirectional FPGA pins on the FMC-LA bank.
+
+  Two kinds of change:
+    * ONE-TIME width bump: GPIO#(32) -> GPIO#(48) and the mkgpio wrapper's
+      Ifc_gpio_axi4lite width, in mixed_cluster.bsv.
+    * PER-LINE (instance-aware) wiring for each new index N, mirroring the
+      existing FMC GPIOs (gpio_29/30/31):
+        - Soc.bsv  : wr_gpioN_in wire, chip_io method trio (in / _out / _outen)
+                     declarations + implementations, and the gpio_in_combined
+                     concatenation entry.
+        - fpga_top.v: inout gpio_N port, gpio_N_in/out/en wires, three SoC
+                     instance port maps, and an IOBUF.
+        - constraints.xdc: PACKAGE_PIN for gpio_N (LVCMOS12, with fallback).
+
+  Instance order: list the GPIO instances ASCENDING (32 -> 47) in
+  soc_build_config.yaml, matching the existing gpio_15..31 style in every file.
+  The only order-sensitive spot is the MSB-first `gpio_in_combined`
+  concatenation; its patch sets `reverse_instances: true` so those entries
+  descend (47..32) internally, keeping gpio_in bit N aligned with gpio_out[N].
+
+  GPIO interrupts are unaffected: mixed_cluster truncates the GPIO interrupt
+  vector to Bit#(16) regardless of width, so no PLIC change is needed.
+
+anchors:
+  # ---- mixed_cluster.bsv: one-time width bump ----
+  gpio_iface_width:
+    file: "{board_dir}/mixed_cluster.bsv"
+    # Consume the whole line (incl. trailing comment) so nothing is stranded.
+    pattern: 'interface GPIO#\(32\) gpio_io;.*'
+    position: "replace"
+
+  gpio_module_width:
+    file: "{board_dir}/mixed_cluster.bsv"
+    pattern: 'module mkgpio\(Ifc_gpio_axi4lite#\(`paddr, `buswidth, `USERSPACE, 32\)\);'
+    position: "replace"
+
+  # ---- Soc.bsv: per-line wiring ----
+  soc_wire_decl:
+    file: "{board_dir}/Soc.bsv"
+    pattern: 'Wire#\(Bit#\(1\)\) wr_gpio31_in <- mkDWire\(0\);'
+    position: "after"
+
+  # chip_io interface: input-method declaration group (ends at gpio_31, each
+  # decl preceded by the always_enabled attribute). Anchored WITH the attribute
+  # so it matches the declaration, not the identically-named implementation.
+  soc_chipio_in_decl:
+    file: "{board_dir}/Soc.bsv"
+    pattern: '\(\*always_enabled,always_ready\*\)\s*\n\s*method Action  gpio_31\(Bit#\(1\) in\);'
+    position: "after"
+    multiline: true
+
+  soc_chipio_out_decl:
+    file: "{board_dir}/Soc.bsv"
+    pattern: 'method Bit#\(1\)gpio_31_out;'
+    position: "after"
+
+  soc_chipio_outen_decl:
+    file: "{board_dir}/Soc.bsv"
+    pattern: 'method Bit#\(1\)gpio_31_outen;'
+    position: "after"
+
+  # chip_io implementations (the input impl is the method body that sets the wire)
+  soc_in_impl:
+    file: "{board_dir}/Soc.bsv"
+    pattern: 'method Action  gpio_31\(Bit#\(1\) in\);\s*\n\s*wr_gpio31_in <= in;\s*\n\s*endmethod'
+    position: "after"
+    multiline: true
+
+  soc_out_impl:
+    file: "{board_dir}/Soc.bsv"
+    pattern: 'method Bit#\(1\)gpio_31_out = mixed_cluster\.gpio_io\.gpio_out\[31\];'
+    position: "after"
+
+  soc_outen_impl:
+    file: "{board_dir}/Soc.bsv"
+    pattern: 'method gpio_31_outen = mixed_cluster\.gpio_io\.gpio_out_en\[31\];'
+    position: "after"
+
+  # gpio_in_combined MSB entry: insert BEFORE wr_gpio31_in (bit 31) so the new
+  # bits 47..32 sit above it. Anchor carries a trailing comma to hit the
+  # concatenation entry, not the wire declaration.
+  soc_concat_in:
+    file: "{board_dir}/Soc.bsv"
+    pattern: 'wr_gpio31_in,'
+    position: "before"
+
+  # ---- fpga_top.v: per-line ports / wires / instance maps / IOBUF ----
+  fpga_port:
+    file: "{board_dir}/fpga_top.v"
+    pattern: 'inout gpio_31,'
+    position: "after"
+
+  fpga_wires:
+    file: "{board_dir}/fpga_top.v"
+    pattern: 'wire gpio_31_in, gpio_31_out, gpio_31_en;'
+    position: "after"
+
+  fpga_inst_in:
+    file: "{board_dir}/fpga_top.v"
+    pattern: '\.gpio_31_in\(gpio_31_in\),'
+    position: "after"
+
+  fpga_inst_out:
+    file: "{board_dir}/fpga_top.v"
+    pattern: '\.gpio_31_out\(gpio_31_out\),'
+    position: "after"
+
+  fpga_inst_outen:
+    file: "{board_dir}/fpga_top.v"
+    pattern: '\.gpio_31_outen\(gpio_31_en\),'
+    position: "after"
+
+  fpga_iobuf:
+    file: "{board_dir}/fpga_top.v"
+    pattern: 'IOBUF gpio_31_inst\(\.O\(gpio_31_in\),\.IO\(gpio_31\),\.I\(gpio_31_out\),\.T\(~gpio_31_en\)\);'
+    position: "after"
+
+  # ---- constraints.xdc: pin the new GPIOs (structural anchor) ----
+  xdc_pin_assign:
+    type: "xdc_pin_assign"
+    file: "{xdc_file}"
+    # Structural anchor: no regex pattern; validated by handler
+
+patches:
+  # === ONE-TIME width bump (32 -> {gpio_width}) ===
+  # {gpio_width} is the total on-chip GPIO width AFTER this integration. Set it in
+  # the config base_context: 48 for the full 32->48 (16 new lines), 36 for 32->36
+  # (4 new lines), etc. This is what merged the old gpio_v1 (48) and gpio_v1_36
+  # (36) defs into one -- the width is now a parameter, not a separate def.
+  - anchor_ref: "gpio_iface_width"
+    code: "interface GPIO#({gpio_width}) gpio_io; //GPIO IO interface"
+    skip_if_contains: "GPIO#({gpio_width})"
+    apply_once: true
+
+  - anchor_ref: "gpio_module_width"
+    code: "module mkgpio(Ifc_gpio_axi4lite#(`paddr, `buswidth, `USERSPACE, {gpio_width}));"
+    skip_if_contains: "USERSPACE, {gpio_width}))"
+    apply_once: true
+
+  # === PER-LINE (instance-aware) — one set per new index N ===
+
+  # Soc.bsv: input wire declaration
+  - anchor_ref: "soc_wire_decl"
+    code: "Wire#(Bit#(1)) wr_gpio{instance_id}_in <- mkDWire(0);"
+    skip_if_contains: "wr_gpio{instance_id}_in <- mkDWire"
+    indent_context: "module_body"
+
+  # Soc.bsv: chip_io declarations (decl before impl so their skip guards are
+  # unambiguous). The input decl uses skip_if_matches (attribute + method) so
+  # it is not masked by the identically-named implementation.
+  - anchor_ref: "soc_chipio_in_decl"
+    code: |
+      (*always_enabled,always_ready*)
+      method Action  gpio_{instance_id}(Bit#(1) in);
+    skip_if_matches: '\(\*always_enabled,always_ready\*\)\s*\n\s*method Action  gpio_{instance_id}\(Bit#\(1\) in\);'
+    indent_context: "interface_body"
+
+  - anchor_ref: "soc_chipio_out_decl"
+    code: |
+      (*always_enabled,always_ready*)
+      method Bit#(1)gpio_{instance_id}_out;
+    skip_if_contains: "method Bit#(1)gpio_{instance_id}_out;"
+    indent_context: "interface_body"
+
+  - anchor_ref: "soc_chipio_outen_decl"
+    code: |
+      (*always_enabled,always_ready*)
+      method Bit#(1)gpio_{instance_id}_outen;
+    skip_if_contains: "method Bit#(1)gpio_{instance_id}_outen;"
+    indent_context: "interface_body"
+
+  # Soc.bsv: chip_io implementations
+  - anchor_ref: "soc_in_impl"
+    code: |
+      method Action  gpio_{instance_id}(Bit#(1) in);
+        wr_gpio{instance_id}_in <= in;
+      endmethod
+    skip_if_contains: "wr_gpio{instance_id}_in <= in;"
+    indent_context: "module_body"
+
+  - anchor_ref: "soc_out_impl"
+    code: "method Bit#(1)gpio_{instance_id}_out = mixed_cluster.gpio_io.gpio_out[{instance_id}];"
+    skip_if_contains: "gpio_{instance_id}_out = mixed_cluster.gpio_io.gpio_out[{instance_id}]"
+    indent_context: "module_body"
+
+  - anchor_ref: "soc_outen_impl"
+    code: "method gpio_{instance_id}_outen = mixed_cluster.gpio_io.gpio_out_en[{instance_id}];"
+    skip_if_contains: "gpio_{instance_id}_outen = mixed_cluster.gpio_io.gpio_out_en[{instance_id}]"
+    indent_context: "module_body"
+
+  # Soc.bsv: gpio_in_combined concatenation entry (inserted before bit 31).
+  # The concatenation is MSB-first, so the new bits must descend (47..32) even
+  # though instances are listed ascending — reverse_instances handles that,
+  # keeping input bit N aligned with gpio_out[N] for every line.
+  - anchor_ref: "soc_concat_in"
+    code: "wr_gpio{instance_id}_in,"
+    skip_if_contains: "wr_gpio{instance_id}_in,"
+    reverse_instances: true
+
+  # fpga_top.v: top-level inout port (Verilog — indent observed from anchor)
+  - anchor_ref: "fpga_port"
+    code: "inout gpio_{instance_id},"
+    skip_if_contains: "inout gpio_{instance_id},"
+
+  - anchor_ref: "fpga_wires"
+    code: "wire gpio_{instance_id}_in, gpio_{instance_id}_out, gpio_{instance_id}_en;"
+    skip_if_contains: "wire gpio_{instance_id}_in,"
+
+  - anchor_ref: "fpga_inst_in"
+    code: ".gpio_{instance_id}_in(gpio_{instance_id}_in),"
+    skip_if_contains: ".gpio_{instance_id}_in(gpio_{instance_id}_in)"
+
+  - anchor_ref: "fpga_inst_out"
+    code: ".gpio_{instance_id}_out(gpio_{instance_id}_out),"
+    skip_if_contains: ".gpio_{instance_id}_out(gpio_{instance_id}_out)"
+
+  - anchor_ref: "fpga_inst_outen"
+    code: ".gpio_{instance_id}_outen(gpio_{instance_id}_en),"
+    skip_if_contains: ".gpio_{instance_id}_outen(gpio_{instance_id}_en)"
+
+  - anchor_ref: "fpga_iobuf"
+    code: "IOBUF gpio_{instance_id}_inst(.O(gpio_{instance_id}_in),.IO(gpio_{instance_id}),.I(gpio_{instance_id}_out),.T(~gpio_{instance_id}_en));"
+    skip_if_contains: "IOBUF gpio_{instance_id}_inst"
+
+  # constraints.xdc: dedicated pin for this GPIO line (LVCMOS12, with fallback)
+  - anchor_ref: "xdc_pin_assign"
+    port_name: "gpio_{instance_id}"
+    target_board_pin: "{gpio_pin}"
+    fallback_pin: "{gpio_fallback}"
+    io_standard: "{gpio_io_standard}"
+    skip_if_contains: "get_ports {gpio_{instance_id}}"
+    type: "xdc_pin_assign"

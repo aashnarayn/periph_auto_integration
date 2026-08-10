@@ -1,0 +1,475 @@
+name: "pwm_v1"
+yaml_version: "2.0"
+# Unified with/without-pinmux def. Configs that reference this by plain `def_path`
+# (no `modes:`) get this default mode -- so the existing pwm6..9 dedicated-pin
+# configs keep working unchanged, while a config that declares `modes:` can pick
+# with_pinmux per instance.
+default_mode: "without_pinmux"
+description: >
+  Add four direct-connected PWM channels (pwm6..pwm9) beside the six existing
+  pinmuxed channels (pwm0..pwm5) of the PWM cluster, INCLUDING their sideband
+  interrupts.
+
+  The pwm IP (devices/pwm_v2/pwm.bsv, the RTL version bsvpath selects) is
+  parameterized on `channels`; pwm_cluster.bsv
+  instantiates exactly one mkpwm slave. This def widens that single slave from 6
+  to 10 channels and surfaces the four new outputs AND their four sb_interrupts as
+  Ifc_pwm_cluster methods, a chip_io method in Soc.bsv, dedicated output pins in
+  fpga_top.v (port, wire, SoC port map, IOBUF) constrained in the XDC, and four
+  new lines in the Soc.bsv interrupt concat.
+
+  "Direct connection" = each pwm{N} line goes straight to a dedicated FPGA pin via
+  an IOBUF held in permanent output mode (.T(1'b0)) exactly like rtc0/rtc1, NOT
+  through the pinmux. The six pinmuxed channels and their pinmux cells (10, 12,
+  13, 16, 17, 18) are untouched -- pwm6..9 do not consume pinmux cells.
+
+  ADDRESS MAP: unchanged, and no software regression. The pwm slave decodes
+  `Bit#(TAdd#(TLog#(TAdd#(channels,1)),4))` of the address, so channels=6 decodes
+  7 bits (max valid offset 6*16 = 0x60) and channels=10 decodes 8 bits (max valid
+  offset 10*16 = 0xA0). Both fit the existing `PWM0Base`..`PWM0End` window
+  ('h0003_0000..'h0003_00FF), and channel i keeps its offset of i*16, so the
+  register map of pwm0..pwm5 is bit-for-bit identical.
+
+  INTERRUPT ORDERING (this is why the Soc.defines counters below exist):
+  the mixed_cluster interrupt bus is a concat, MSB -> LSB:
+      { spi.., spi1, spi0, wr_ext_interrupts[1:0], uart_interrupts, pwm..pwm0 }
+  PWM sits at the LSB end, so pwm_cluster.pwm{i}_sb_interrupt lands on bus bit
+  [i]. pwm6..pwm9 are inserted immediately ABOVE pwm5, keeping all ten channels
+  CONTIGUOUS at bus [9:0] -- the property that makes bit i == channel i. Widening
+  PWM therefore shifts uart / wr_ext / spi up by 4, which is exactly why no IP is
+  allowed to hardcode an absolute bus index any more: `ExtIntWidth, `ExtIntMsb,
+  `PWMCluster_Channels and `PWMChannelsMsb in Soc.defines derive every width and
+  slice bound, and this def grows them by 4 each. See UserManual Section 21.
+
+  INDEPENDENCE: order- and presence-independent.
+    * The bus/PLIC widths it grows are DERIVED macros, not literals, so it never
+      collides with uart_v1 (which grows `ExtIntWidth by 1) or sspi_v1 (by 2).
+      Any subset composes: pwm alone gives ExtIntWidth 17 / PLICWidth 39; with
+      uart+sspi it gives 20 / 42 (+ discretes).
+    * No cluster slave slot. It widens the EXISTING mkpwm slave rather than
+      adding one, so PWMCluster_Num_Slaves / PWMCluster_err_slave_num are
+      unchanged and no `allocated_slot` is claimed.
+    * It INSERTS into the Soc.bsv interrupt concat at a stable anchor
+      (`pwm_cluster.pwm5_sb_interrupt,`) rather than rewriting the whole rule,
+      so it cannot clobber sspi_v1's spi2/spi3 lines (or be clobbered by them).
+  It may therefore be listed ANYWHERE in soc_build_config.yaml.
+
+  IDEMPOTENCY: every patch carries a skip guard. The five Soc.defines counters
+  are `cluster_config` increments, which can only be guarded by a LITERAL
+  (ClusterConfigHandler does not support skip_if_matches), so this def writes a
+  marker macro `PWM_Direct_Channels` and guards all five on it. The marker patch
+  is deliberately listed AFTER the counters: on a first run the counters see no
+  marker and fire, the marker is then written, and on every re-run all five skip.
+  The channel-count widening in pwm_cluster.bsv uses `skip_if_matches` (a regex)
+  because its `, 32, 6)` anchor is consumed by its own replacement.
+
+  ELECTRICALS: pwm6..pwm9 land on the free FMC-LA clock-capable pins, which sit
+  in the VADJ bank at 1.2V — hence LVCMOS12, matching i2c1/gpio_29-31/spi2-3.
+  Fallback pins are used automatically if the primaries are taken.
+
+# =============================================================================
+# ANCHORS: Reusable, instance-agnostic injection points
+# =============================================================================
+anchors:
+  # ---- Soc.defines: derived interrupt-bus / PLIC sizing (see Section 21) ----
+  soc_defines_pwm_channels:
+    file: "{board_dir}/Soc.defines"
+    pattern: '^`define\s+PWMCluster_Channels\s+\d+'
+    position: "replace"
+
+  soc_defines_pwm_msb:
+    file: "{board_dir}/Soc.defines"
+    pattern: '^`define\s+PWMChannelsMsb\s+\d+'
+    position: "replace"
+
+  soc_defines_extint_width:
+    file: "{board_dir}/Soc.defines"
+    pattern: '^`define\s+ExtIntWidth\s+\d+'
+    position: "replace"
+
+  soc_defines_extint_msb:
+    file: "{board_dir}/Soc.defines"
+    pattern: '^`define\s+ExtIntMsb\s+\d+'
+    position: "replace"
+
+  soc_defines_plic_width:
+    file: "{board_dir}/Soc.defines"
+    pattern: '^`define\s+PLICWidth\s+\d+'
+    position: "replace"
+
+  # Marker macro: the literal idempotency guard for the five counters above.
+  soc_defines_marker:
+    file: "{board_dir}/Soc.defines"
+    pattern: '^`define\s+PLICWidth\s+\d+'
+    position: "after"
+
+  # ---- pwm_cluster.bsv: widen the single mkpwm slave 6 -> 10 channels ----
+  pwm_cluster_channel_count:
+    file: "{board_dir}/pwm_cluster.bsv"
+    pattern: 'module mkpwm\(Ifc_pwm_axi4lite#\(`paddr, `buswidth, `USERSPACE, 32, 6\)\);'
+    position: "replace"
+
+  # ---- pwm_cluster.bsv: Ifc_pwm_cluster output method (decl + impl) ----
+  pwm_cluster_io_decl:
+    file: "{board_dir}/pwm_cluster.bsv"
+    pattern: 'method Bit#\(1\) pwm5_io;'
+    position: "after"
+
+  pwm_cluster_io_impl:
+    file: "{board_dir}/pwm_cluster.bsv"
+    pattern: 'method pwm5_io=pwm0\.io\.pwm_o\[5\];'
+    position: "after"
+
+  # ---- pwm_cluster.bsv: Ifc_pwm_cluster sideband-interrupt method (decl + impl) ----
+  pwm_cluster_int_decl:
+    file: "{board_dir}/pwm_cluster.bsv"
+    pattern: 'method Bit#\(1\) pwm5_sb_interrupt;'
+    position: "after"
+
+  pwm_cluster_int_impl:
+    file: "{board_dir}/pwm_cluster.bsv"
+    pattern: 'method pwm5_sb_interrupt=pwm0\.sb_interrupt\[5\];'
+    position: "after"
+
+  # ---- Soc.bsv: chip_io method (decl + binding) ----
+  soc_bsv_chip_io_decl:
+    file: "{board_dir}/Soc.bsv"
+    pattern: 'interface IOCellSide iocell_io;'
+    position: "after"
+
+  soc_bsv_chip_io_bind:
+    file: "{board_dir}/Soc.bsv"
+    pattern: 'interface iocell_io = mixed_cluster\.pinmuxtop_iocell_side;.*'
+    position: "after"
+
+  # ---- Soc.bsv: interrupt concat -- INSERT above pwm5, keeping pwm contiguous ----
+  # Anchored on pwm5's own line (one signal per line since the Section 21 refactor),
+  # so this composes with sspi_v1's insert at the spi1 line. Neither replaces the
+  # rule, so neither can clobber the other.
+  soc_bsv_interrupt_concat:
+    file: "{board_dir}/Soc.bsv"
+    pattern: '^\s*pwm_cluster\.pwm5_sb_interrupt,'
+    position: "before"
+
+  # ---- fpga_top.v: dedicated output pin per channel ----
+  fpga_top_port_decl:
+    file: "{board_dir}/fpga_top.v"
+    pattern: '// ---- direct-connected peripheral ports \(added by automation\) ----'
+    position: "after"
+
+  fpga_top_wire_decl:
+    file: "{board_dir}/fpga_top.v"
+    pattern: '   wire\s+ip2intc_irpt;'
+    position: "before"
+
+  fpga_top_soc_inst:
+    file: "{board_dir}/fpga_top.v"
+    pattern: '// ---- direct-connected peripheral port maps \(added by automation\) ----'
+    position: "after"
+
+  fpga_top_iobuf:
+    file: "{board_dir}/fpga_top.v"
+    pattern: 'IOBUF i2c1_sda_inst\([\s\S]*?\);'
+    position: "after"
+    multiline: true
+
+  # ---- constraints.xdc ----
+  xdc_pin_assign:
+    type: "xdc_pin_assign"
+    file: "{xdc_file}"
+
+  # =========================================================================
+  # WITH-PINMUX anchors (mode: with_pinmux). Route the designated channel
+  # through the pinmux instead of a dedicated pin -- exactly how uart_v1 routes
+  # UART3 through cell12/13. DEMONSTRATION: the pinmux exposes pwm0..pwm5 slots
+  # and cells 7/8/9 carry an UNUSED mux==2 (pwm) arm, so this adds a pwm6 slot
+  # onto cell7. Like uart_v1's with_pinmux, it is bound to fixed cells and is
+  # meant for a SINGLE designated pinmuxed channel.
+  # =========================================================================
+  # ---- pinmux.bsv: output wire for the new pinmux pwm slot ----
+  pinmux_pwm_wire_decl:
+    file: "{board_dir}/pinmux.bsv"
+    pattern: 'Wire#\(Bit#\(1\)\) wrpwm5_out<-mkDWire\(0\);'
+    position: "after"
+
+  # ---- pinmux.bsv: PeripheralSidePWM interface slot ----
+  pinmux_pwm_interface_decl:
+    file: "{board_dir}/pinmux.bsv"
+    pattern: 'interface PeripheralSidePWM pwm5;'
+    position: "after"
+
+  # ---- pinmux.bsv: cell7 output muxer -- claim its unused mux==2 (pwm) arm ----
+  # Byte-exact full-block replace (3 tabs of indent preserved) so no whitespace
+  # drift. cell7's OUT muxer is the only block starting `mux==0?wrgpioa_a0_out`
+  # then `mux==1?val0` then `mux==2?val0 // unused`, so the match is unambiguous.
+  pinmux_pwm_cell7_out_mux:
+    file: "{board_dir}/pinmux.bsv"
+    pattern: "wrcell7_mux==0\\?wrgpioa_a0_out:\n\t\t\twrcell7_mux==1\\?val0:\n\t\t\twrcell7_mux==2\\?val0: // unused"
+    position: "replace"
+    multiline: true
+
+  # ---- pinmux.bsv: implement the PeripheralSidePWM pwm slot ----
+  pinmux_pwm_peripheral_impl:
+    file: "{board_dir}/pinmux.bsv"
+    pattern: 'interface pwm5 = interface PeripheralSidePWM[\s\S]*?wrpwm5_out<=in;[\s\S]*?endinterface;\s*\n\s*endinterface;'
+    position: "after"
+    multiline: true
+
+  # ---- Soc.bsv: route pwm_cluster channel -> pinmux slot (not a chip_io pin) ----
+  soc_bsv_pinmux_route:
+    file: "{board_dir}/Soc.bsv"
+    pattern: 'mixed_cluster\.pinmuxtop_peripheral_side\.pwm5\.out\.put\(pwm_cluster\.pwm5_io\);'
+    position: "after"
+
+# =============================================================================
+# PATCHES
+# =============================================================================
+patches:
+  # === Soc.defines: grow the derived sizing macros by 4 (one per new channel) ===
+  # ALL FIVE guard on the `PWM_Direct_Channels marker, which is written by the
+  # LAST patch in this group. First run: no marker -> all five fire. Re-run:
+  # marker present -> all five skip. Guarding on {calculated_val} instead would
+  # be wrong: it is only known at apply time, so it could never match and the
+  # counters would grow on every single run.
+  - anchor_ref: "soc_defines_extint_width"
+    code: "`define ExtIntWidth {calculated_val}"
+    skip_if_contains: "`define PWM_Channel_{instance_id}"
+    apply_once: true
+    type: "cluster_config"
+    target_macro: "ExtIntWidth"
+    increment_by_instances: true
+
+  - anchor_ref: "soc_defines_extint_msb"
+    code: "`define ExtIntMsb {calculated_val}"
+    skip_if_contains: "`define PWM_Channel_{instance_id}"
+    apply_once: true
+    type: "cluster_config"
+    target_macro: "ExtIntMsb"
+    increment_by_instances: true
+
+  - anchor_ref: "soc_defines_plic_width"
+    code: "`define PLICWidth {calculated_val}"
+    skip_if_contains: "`define PWM_Channel_{instance_id}"
+    apply_once: true
+    type: "cluster_config"
+    target_macro: "PLICWidth"
+    increment_by_instances: true
+
+  - anchor_ref: "soc_defines_pwm_channels"
+    code: "`define PWMCluster_Channels {calculated_val}"
+    skip_if_contains: "`define PWM_Channel_{instance_id}"
+    apply_once: true
+    type: "cluster_config"
+    target_macro: "PWMCluster_Channels"
+    increment_by_instances: true
+
+  - anchor_ref: "soc_defines_pwm_msb"
+    code: "`define PWMChannelsMsb {calculated_val}"
+    skip_if_contains: "`define PWM_Channel_{instance_id}"
+    apply_once: true
+    type: "cluster_config"
+    target_macro: "PWMChannelsMsb"
+    increment_by_instances: true
+
+  # PER-INSTANCE marker -- one `PWM_Channel_{id} macro per added channel, written
+  # LAST so the five counters above still see no marker for THIS channel on the
+  # first run. Per-instance (not a single shared marker) so PWM can appear in TWO
+  # peripheral entries -- e.g. one with_pinmux + one without_pinmux -- in the same
+  # config: each entry's counters grow the width by exactly its own new channels,
+  # exactly like uart_v1's per-instance base-macro guard.
+  - anchor_ref: "soc_defines_marker"
+    code: "`define PWM_Channel_{instance_id} 1"
+    skip_if_contains: "`define PWM_Channel_{instance_id}"
+    instance_aware: true
+
+  # === pwm_cluster.bsv: widen the mkpwm slave (one-time, not instance-aware) ===
+  # The anchor requires ", 32, 6)". Once widened that anchor is gone, so the skip
+  # guard must fire FIRST -- it matches any channel count that is not 6.
+  - anchor_ref: "pwm_cluster_channel_count"
+    code: "module mkpwm(Ifc_pwm_axi4lite#(`paddr, `buswidth, `USERSPACE, 32, {pwm_total_channels}));"
+    skip_if_matches: 'module mkpwm\(Ifc_pwm_axi4lite#\(`paddr, `buswidth, `USERSPACE, 32, (?!6\))\d+\)\);'
+    apply_once: true
+
+  # === pwm_cluster.bsv: Ifc_pwm_cluster output method declaration ===
+  - anchor_ref: "pwm_cluster_io_decl"
+    code: "method Bit#(1) pwm{instance_id}_io;"
+    skip_if_contains: "method Bit#(1) pwm{instance_id}_io;"
+    instance_aware: true
+    indent_context: "interface_body"
+
+  # === pwm_cluster.bsv: bind method to the widened slave's channel vector ===
+  - anchor_ref: "pwm_cluster_io_impl"
+    code: "method pwm{instance_id}_io=pwm0.io.pwm_o[{instance_id}];"
+    skip_if_contains: "method pwm{instance_id}_io=pwm0.io.pwm_o[{instance_id}];"
+    instance_aware: true
+    indent_context: "module_body"
+
+  # === pwm_cluster.bsv: sideband-interrupt method declaration ===
+  # The widened slave already exposes sb_interrupt[6..9]; these surface them.
+  # (*always_ready, always_enabled*) matches pwm0..pwm5 and is REQUIRED, not
+  # cosmetic: mkpwm_cluster is a (*synthesize*) boundary, so without it bsc emits
+  # an RDY_pwm{N}_sb_interrupt companion port and Soc.bsv's connect_interrupt_lines
+  # rule would have to guard on it.
+  - anchor_ref: "pwm_cluster_int_decl"
+    code: |
+      (*always_ready, always_enabled*)
+      method Bit#(1) pwm{instance_id}_sb_interrupt;
+    skip_if_contains: "method Bit#(1) pwm{instance_id}_sb_interrupt;"
+    instance_aware: true
+    indent_context: "interface_body"
+
+  # === pwm_cluster.bsv: bind the sideband-interrupt method ===
+  - anchor_ref: "pwm_cluster_int_impl"
+    code: "method pwm{instance_id}_sb_interrupt=pwm0.sb_interrupt[{instance_id}];"
+    skip_if_contains: "method pwm{instance_id}_sb_interrupt=pwm0.sb_interrupt[{instance_id}];"
+    instance_aware: true
+    indent_context: "module_body"
+
+  # === Soc.bsv: interrupt concat -- pwm9..pwm6 inserted ABOVE pwm5 ===
+  # reverse_instances emits 9,8,7,6 (config order is 6,7,8,9), so the concat runs
+  # MSB -> LSB and channel i keeps bus bit [i]. All ten PWM channels stay
+  # contiguous at [9:0].
+  - anchor_ref: "soc_bsv_interrupt_concat"
+    code: "pwm_cluster.pwm{instance_id}_sb_interrupt,"
+    skip_if_contains: "pwm_cluster.pwm{instance_id}_sb_interrupt,"
+    instance_aware: true
+    reverse_instances: true
+
+  # ==== mode: without_pinmux -- dedicated FPGA pin per channel (default) ====
+  # === Soc.bsv: chip_io declaration ===
+  - anchor_ref: "soc_bsv_chip_io_decl"
+    code: |
+      (*always_enabled,always_ready*)
+      method Bit#(1) pwm{instance_id}_io;
+    skip_if_contains: "method Bit#(1) pwm{instance_id}_io;"
+    instance_aware: true
+    indent_context: "interface_body"
+    mode: without_pinmux
+
+  # === Soc.bsv: chip_io binding ===
+  - anchor_ref: "soc_bsv_chip_io_bind"
+    code: "method pwm{instance_id}_io = pwm_cluster.pwm{instance_id}_io;"
+    skip_if_contains: "method pwm{instance_id}_io = pwm_cluster.pwm{instance_id}_io;"
+    instance_aware: true
+    indent_context: "module_body"
+    mode: without_pinmux
+
+  # === fpga_top.v: top-level port ===
+  - anchor_ref: "fpga_top_port_decl"
+    code: "output pwm{instance_id},"
+    skip_if_contains: "output pwm{instance_id},"
+    instance_aware: true
+    mode: without_pinmux
+
+  # === fpga_top.v: internal wire ===
+  - anchor_ref: "fpga_top_wire_decl"
+    code: "wire wire_pwm{instance_id};"
+    skip_if_contains: "wire wire_pwm{instance_id};"
+    instance_aware: true
+    mode: without_pinmux
+
+  # === fpga_top.v: SoC port map ===
+  - anchor_ref: "fpga_top_soc_inst"
+    code: ".pwm{instance_id}_io(wire_pwm{instance_id}),"
+    skip_if_contains: ".pwm{instance_id}_io(wire_pwm{instance_id}),"
+    instance_aware: true
+    mode: without_pinmux
+
+  # === fpga_top.v: output buffer ===
+  - anchor_ref: "fpga_top_iobuf"
+    code: "{verilog_buffer_type} pwm{instance_id}_io_inst(.O(),.IO(pwm{instance_id}),.I(wire_pwm{instance_id}),.T({verilog_buffer_tristate}));"
+    skip_if_contains: "pwm{instance_id}_io_inst"
+    instance_aware: true
+    mode: without_pinmux
+
+  # === constraints.xdc: dedicated pin per channel (with fallback) ===
+  - anchor_ref: "xdc_pin_assign"
+    port_name: "pwm{instance_id}"
+    target_board_pin: "{pwm_pin}"
+    fallback_pin: "{pwm_fallback}"
+    io_standard: "{pwm_io_standard}"
+    skip_if_contains: "get_ports {pwm{instance_id}}"
+    instance_aware: true
+    type: "xdc_pin_assign"
+    mode: without_pinmux
+
+  # ==== mode: with_pinmux -- route the channel through the pinmux (cell7) ====
+  # Mirrors uart_v1's cell12/13 routing. Adds a pwm{instance_id} slot to the
+  # pinmux and drives it from pwm_cluster; no chip_io port / dedicated pin / XDC.
+  # === pinmux.bsv: output wire for the slot ===
+  - anchor_ref: "pinmux_pwm_wire_decl"
+    code: "Wire#(Bit#(1)) wrpwm{instance_id}_out<-mkDWire(0);"
+    skip_if_contains: "wrpwm{instance_id}_out<-mkDWire"
+    instance_aware: true
+    indent_context: "pinmux_module_body"
+    mode: with_pinmux
+
+  # === pinmux.bsv: PeripheralSidePWM interface slot ===
+  - anchor_ref: "pinmux_pwm_interface_decl"
+    code: "interface PeripheralSidePWM pwm{instance_id};"
+    skip_if_contains: "PeripheralSidePWM pwm{instance_id};"
+    instance_aware: true
+    indent_context: "pinmux_interface_body"
+    mode: with_pinmux
+
+  # === pinmux.bsv: claim cell7's unused mux==2 (pwm) output arm ===
+  - anchor_ref: "pinmux_pwm_cell7_out_mux"
+    code: "wrcell7_mux==0?wrgpioa_a0_out:\n\t\t\twrcell7_mux==1?val0:\n\t\t\twrcell7_mux==2?wrpwm{instance_id}_out: // pwm{instance_id} is a output"
+    skip_if_contains: "wrcell7_mux==2?wrpwm{instance_id}_out:"
+    instance_aware: true
+    mode: with_pinmux
+
+  # === pinmux.bsv: implement the PeripheralSidePWM slot ===
+  - anchor_ref: "pinmux_pwm_peripheral_impl"
+    code: |
+
+        interface pwm{instance_id} = interface PeripheralSidePWM
+            interface out = interface Put
+              method Action put(Bit#(1) in);
+                wrpwm{instance_id}_out<=in;
+              endmethod
+            endinterface;
+        endinterface;
+    skip_if_contains: "interface pwm{instance_id} = interface PeripheralSidePWM"
+    instance_aware: true
+    mode: with_pinmux
+
+  # === Soc.bsv: drive the pinmux slot from the pwm cluster channel ===
+  - anchor_ref: "soc_bsv_pinmux_route"
+    code: "mixed_cluster.pinmuxtop_peripheral_side.pwm{instance_id}.out.put(pwm_cluster.pwm{instance_id}_io);"
+    skip_if_contains: "pinmuxtop_peripheral_side.pwm{instance_id}.out.put"
+    instance_aware: true
+    indent_context: "module_body"
+    mode: with_pinmux
+
+# =============================================================================
+# ANCHOR REFERENCE (for --pre-audit / --post-audit)
+# =============================================================================
+#
+# PRE-AUDIT ANCHORS (must exist in {board_dir}/ in a pristine tree):
+#   {board_dir}/Soc.defines:      "^`define PWMCluster_Channels \d+"  (and PWMChannelsMsb,
+#                                 ExtIntWidth, ExtIntMsb, PLICWidth)
+#   {board_dir}/pwm_cluster.bsv:  "module mkpwm\(Ifc_pwm_axi4lite#\(...32, 6\)\);"
+#   {board_dir}/pwm_cluster.bsv:  "method Bit#\(1\) pwm5_io;"
+#   {board_dir}/pwm_cluster.bsv:  "method pwm5_io=pwm0\.io\.pwm_o\[5\];"
+#   {board_dir}/pwm_cluster.bsv:  "method Bit#\(1\) pwm5_sb_interrupt;"
+#   {board_dir}/pwm_cluster.bsv:  "method pwm5_sb_interrupt=pwm0\.sb_interrupt\[5\];"
+#   {board_dir}/Soc.bsv:          "interface IOCellSide iocell_io;"
+#   {board_dir}/Soc.bsv:          "interface iocell_io = mixed_cluster\.pinmuxtop_iocell_side;"
+#   {board_dir}/Soc.bsv:          "^\s*pwm_cluster\.pwm5_sb_interrupt,"
+#   {board_dir}/fpga_top.v:       "output\s+gptimer3_out\s*,"
+#   {board_dir}/fpga_top.v:       "   wire\s+ip2intc_irpt;"
+#   {board_dir}/fpga_top.v:       "\.gptimer3_io_timer_out\(gptimer3_out\),"
+#   {board_dir}/fpga_top.v:       "IOBUF i2c1_sda_inst\([\s\S]*?\);"
+#
+# POST-AUDIT (per instance N in 6..9):
+#   {board_dir}/Soc.defines:      PWMCluster_Channels=10, PWMChannelsMsb=9,
+#                                 ExtIntWidth +4, ExtIntMsb +4, PLICWidth +4,
+#                                 `define PWM_Direct_Channels 4
+#   {board_dir}/pwm_cluster.bsv:  channel count widened to {pwm_total_channels}
+#   {board_dir}/pwm_cluster.bsv:  "method Bit#(1) pwmN_io;" + "method pwmN_io=pwm0.io.pwm_o[N];"
+#   {board_dir}/pwm_cluster.bsv:  "method Bit#(1) pwmN_sb_interrupt;" + binding
+#   {board_dir}/Soc.bsv:          "method Bit#(1) pwmN_io;" + "method pwmN_io = pwm_cluster.pwmN_io;"
+#   {board_dir}/Soc.bsv:          "pwm_cluster.pwmN_sb_interrupt," in the interrupt concat
+#   {board_dir}/fpga_top.v:       "output pwmN," + "wire wire_pwmN;" + ".pwmN_io(wire_pwmN)," + "pwmN_io_inst"
+#   {xdc_file}:                   "[get_ports {pwmN}]"
