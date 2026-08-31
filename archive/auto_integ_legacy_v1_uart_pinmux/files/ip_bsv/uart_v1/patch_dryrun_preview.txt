@@ -1,0 +1,171 @@
+Dry-run preview of proposed replacements from uart_v1.yaml patches
+
+--- mixed_cluster.bsv: imports (original)
+  package mixed_cluster;
+	import AXI4_Lite_Types:: *;
+	import AXI4_Lite_Fabric:: *;
+  import err_slave::*;
+  import Connectable:: *;
+  import GetPut:: *;
+
++++ mixed_cluster.bsv: imports (proposed)
+  package mixed_cluster;
+  import AXI4_Lite_Types:: *;
+  import AXI4_Lite_Fabric:: *;
+  import err_slave::*;
+  import Connectable:: *;
+  import GetPut:: *;
+
+--- mixed_cluster.bsv: mkgptimer block (original)
+(*synthesize*)
+module mkgptimer#(Clock ext_clk)(Ifc_gptimer_axi4lite#(`paddr, `buswidth, `USERSPACE,32)); 
+  let ifc();
+  mkgptimer_axi4lite#(ext_clk) _temp(ifc);
+  return ifc;
+endmodule
+
++++ mixed_cluster.bsv: mkgptimer block (proposed)
+(*synthesize*)
+  module mkgptimer#(Clock ext_clk)(Ifc_gptimer_axi4lite#(`paddr, `buswidth, `USERSPACE,32));
+    let ifc();
+    mkgptimer_axi4lite#(ext_clk) _temp(ifc);
+    return ifc;
+  endmodule
+
+--- mixed_cluster.bsv: fn_slave_map (original)
+  function Bit#(TLog#(`MixedCluster_Num_Slaves)) fn_slave_map (Bit#(`paddr) addr);
+    Bit#(TLog#(`MixedCluster_Num_Slaves)) slave_num = 0;
+    if(addr>= `GPIOBase && addr<= `GPIOEnd)
+      slave_num = `GPIO_slave_num;
+    else if(addr>= `PLICBase && addr<= `PLICEnd)
+      slave_num = `PLIC_slave_num;
+    else if(addr>= `I2C1Base && addr<= `I2C1End)
+      slave_num = `I2C1_slave_num;
+    else if(addr>= `I2C0Base && addr<= `I2C0End)
+      slave_num = `I2C0_slave_num;
+    else if(addr>= `GPTimer0Base && addr<= `GPTimer0End)
+		slave_num = `GPTimer0_slave_num;
+    else if(addr>= `GPTimer1Base && addr<= `GPTimer1End)
+	  slave_num = `GPTimer1_slave_num;
+    else if(addr>= `GPTimer2Base && addr<= `GPTimer2End)
+	  slave_num = `GPTimer2_slave_num;
+    else if(addr>= `GPTimer3Base && addr<= `GPTimer3End)
+	  slave_num = `GPTimer3_slave_num;
+    else if(addr>= `XADCBase && addr<= `XADCEnd)
+      slave_num = `XADC_slave_num;
+    else if(addr >= `PinmuxBase && addr <= `PinmuxEnd)
+      slave_num = `Pinmux_slave_num;
+    else
+      slave_num = `MixedCluster_err_slave_num;
+      
+    return slave_num;
+  endfunction:fn_slave_map
+
++++ mixed_cluster.bsv: fn_slave_map (proposed)
+  function Bit#(TLog#(`MixedCluster_Num_Slaves)) fn_slave_map (Bit#(`paddr) addr);
+    Bit#(TLog#(`MixedCluster_Num_Slaves)) slave_num = 0;
+    if (addr >= `GPIOBase && addr <= `GPIOEnd)
+      slave_num = `GPIO_slave_num;
+    else if (addr >= `PLICBase && addr <= `PLICEnd)
+      slave_num = `PLIC_slave_num;
+    else if (addr >= `I2C1Base && addr <= `I2C1End)
+      slave_num = `I2C1_slave_num;
+    else if (addr >= `I2C0Base && addr <= `I2C0End)
+      slave_num = `I2C0_slave_num;
+    else if (addr >= `GPTimer0Base && addr <= `GPTimer0End)
+      slave_num = `GPTimer0_slave_num;
+    else if (addr >= `GPTimer1Base && addr <= `GPTimer1End)
+      slave_num = `GPTimer1_slave_num;
+    else if (addr >= `GPTimer2Base && addr <= `GPTimer2End)
+      slave_num = `GPTimer2_slave_num;
+    else if (addr >= `GPTimer3Base && addr <= `GPTimer3End)
+      slave_num = `GPTimer3_slave_num;
+    else if (addr >= `XADCBase && addr <= `XADCEnd)
+      slave_num = `XADC_slave_num;
+    else if (addr >= `PinmuxBase && addr <= `PinmuxEnd)
+      slave_num = `Pinmux_slave_num;
+    else
+      slave_num = `MixedCluster_err_slave_num;
+    return slave_num;
+  endfunction:fn_slave_map
+
+--- mixed_cluster.bsv: wr_external_interrupts (original)
+				Wire#(Bit#(14)) wr_external_interrupts <- mkDWire('d0);
+
++++ mixed_cluster.bsv: wr_external_interrupts (proposed)
+    Wire#(Bit#(14)) wr_external_interrupts <- mkDWire('d0);
+
+--- mixed_cluster.bsv: plic_inputs concatenation (original)
+				Bit#(36) plic_inputs= {wr_external_interrupts[13:7], i2c1.isint, i2c0.isint, gptimer3.sb_interrupt, gptimer2.sb_interrupt, gptimer1.sb_interrupt, gptimer0.sb_interrupt, lv_gpio_intr, wr_external_interrupts[6:0]};
+
++++ mixed_cluster.bsv: plic_inputs concatenation (proposed)
+    Bit#(36) plic_inputs = {wr_external_interrupts[13:7], i2c1.isint, i2c0.isint, gptimer3.sb_interrupt, gptimer2.sb_interrupt, gptimer1.sb_interrupt, gptimer0.sb_interrupt, lv_gpio_intr, wr_external_interrupts[6:0]};
+
+--- mixed_cluster.bsv: interrupts method (original)
+    method sb_ext_interrupt = wr_sb_ext_interrupt;
+    interface gpio_io= gpio.io;
+method Action interrupts(Bit#(14) inp);
+		wr_external_interrupts<= inp;
+		endmethod
+
++++ mixed_cluster.bsv: interrupts method (proposed)
+    method sb_ext_interrupt = wr_sb_ext_interrupt;
+    interface gpio_io = gpio.io;
+    method Action interrupts(Bit#(14) inp);
+      wr_external_interrupts <= inp;
+    endmethod
+
+--- uart_cluster.bsv: fn_slave_map else-if (original)
+    else if(addr>= `UART2Base && addr<= `UART2End )
+      slave_num =  `UART2_slave_num;
+else if(addr>= `UART3Base && addr<= `UART3End )
+  slave_num = `UART3_slave_num;
+
++++ uart_cluster.bsv: fn_slave_map else-if (proposed)
+    else if (addr >= `UART2Base && addr <= `UART2End)
+      slave_num = `UART2_slave_num;
+    else if (addr >= `UART3Base && addr <= `UART3End)
+      slave_num = `UART3_slave_num;
+
+--- uart_cluster.bsv: uart_interrupts method (original)
+    interface slave= c2s_xactor.axi_side;
+method Bit#(4) uart_interrupts;
+					return {uart3.interrupt, uart2.interrupt, uart1.interrupt, uart0.interrupt};
+			//return {uart2.interrupt, uart1.interrupt, uart0.interrupt};
+		endmethod
+
++++ uart_cluster.bsv: uart_interrupts method (proposed)
+    interface slave = c2s_xactor.axi_side;
+    method Bit#(4) uart_interrupts;
+      return {uart3.interrupt, uart2.interrupt, uart1.interrupt, uart0.interrupt};
+    endmethod
+
+--- Soc.bsv: pinmux uart3 wiring (original)
+           let pinmux_uart2_rx <- (mixed_cluster.pinmuxtop_peripheral_side.uart2.rx.get);
+           uart_cluster.uart2_io.sin(pinmux_uart2_rx);
+let pinmux_uart3_rx <- (mixed_cluster.pinmuxtop_peripheral_side.uart3.rx.get);
+uart_cluster.uart3_io.sin(pinmux_uart3_rx);
+
++++ Soc.bsv: pinmux uart3 wiring (proposed)
+           let pinmux_uart2_rx <- (mixed_cluster.pinmuxtop_peripheral_side.uart2.rx.get);
+           uart_cluster.uart2_io.sin(pinmux_uart2_rx);
+           let pinmux_uart3_rx <- (mixed_cluster.pinmuxtop_peripheral_side.uart3.rx.get);
+           uart_cluster.uart3_io.sin(pinmux_uart3_rx);
+
+--- pinmux.bsv: uart3 wire declarations (original)
+      Wire#(Bit#(1)) wruart2_tx<-mkDWire(0);
+Wire#(Bit#(1)) wruart3_tx<-mkDWire(0);
+Wire#(Bit#(1)) wruart3_rx<-mkDWire(0);
+      Wire#(Bit#(1)) wruart2_rx<-mkDWire(0);
+
++++ pinmux.bsv: uart3 wire declarations (proposed)
+      Wire#(Bit#(1)) wruart2_tx<-mkDWire(0);
+      Wire#(Bit#(1)) wruart3_tx<-mkDWire(0);
+      Wire#(Bit#(1)) wruart3_rx<-mkDWire(0);
+      Wire#(Bit#(1)) wruart2_rx<-mkDWire(0);
+
+--- Comments: informal wording found
+- File: hw/boards/nexys_video/pinmux.bsv lines ~382-383: comments "// need a zero" and "// need a one" — informal but acceptable.
+- File: hw/boards/nexys_video/pinmux_axi4lite.bsv line ~145: comment contains "//TODO user?" — a TODO note; consider editing if you want no TODOs.
+
+End of preview

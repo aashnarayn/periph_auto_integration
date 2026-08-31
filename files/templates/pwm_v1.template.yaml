@@ -29,8 +29,7 @@
   - instance_id: '6'                       # -> pwm6 (first new channel; base SoC has pwm0..pwm5)
     pwm_mode: without_pinmux               # with_pinmux | without_pinmux (OMIT with the def_path form)
     pwm_pin: fmc_la00_cc_p                 # board pin for this channel's output (without_pinmux mode only)
-    pwm_fallback: fmc_la_p[21]             # pin used to route the port originally routed to pwm_pin, now used by this inst
-    					   # (without_pinmux only)
+    pwm_fallback: fmc_la_p[21]             # where the port originally on pwm_pin is relocated (without_pinmux only)
   # - instance_id: '7'                     # add each further channel the same way, up to pwm_total_channels-1
   #   pwm_mode: without_pinmux             # (with_pinmux is bound to cell7, so only ONE channel may use it)
   #   pwm_pin: fmc_la00_cc_n

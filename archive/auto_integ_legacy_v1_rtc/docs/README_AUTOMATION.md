@@ -4,6 +4,16 @@
 ## Goal
 Demonstrate end-to-end peripheral integration via YAML configuration alone — zero manual code edits, zero Python modifications for new peripherals.
 
+> **See also.** `docs/UserManual.md` is the full technical reference — patch
+> schema, phase order, idempotency model, verification recipes, and this
+> framework's own gotchas.
+
+> **2026-08-31:** the idempotency claims below (`skip_if_contains` prevents
+> duplicate patches on re-run) are accurate as written, but weren't actually
+> true until this date — a real bug let `run_peripheral_automation` crash or
+> silently duplicate patches on an already-integrated clone. Fixed; full
+> writeup in `docs/UserManual.md` §5.
+
 ---
 
 ## Deliverables

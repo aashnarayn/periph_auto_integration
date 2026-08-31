@@ -1,0 +1,255 @@
+name: "uart_v1"
+version: "1.0"
+description: "UART3 integration using existing Shakti UART IP"
+
+patches:
+  # === 1. SOC.DEFINES: Slave Count ===
+  - file: "{board_dir}/Soc.defines"
+    anchor_pattern: "^`define UARTCluster_Num_Slaves\\s+4"
+    position: "replace"
+    code: "`define UARTCluster_Num_Slaves 5"
+    skip_if_contains: "`define UARTCluster_Num_Slaves 5"
+
+  # === 2. SOC.DEFINES: Slave Numbers ===
+  - file: "{board_dir}/Soc.defines"
+    anchor_pattern: "^`define UARTCluster_err_slave_num\\s+3"
+    position: "replace"
+    code: |
+      `define UART3_slave_num 3
+      `define UARTCluster_err_slave_num 4
+    skip_if_contains: "`define UART3_slave_num"
+
+  # === 3. SOC.DEFINES: Memory Map ===
+  - file: "{board_dir}/Soc.defines"
+    anchor_pattern: "^`define UART2End.*$"
+    position: "replace"
+    code: |
+      `define UART2End      'h0001_1540
+      `define UART3Base     'h0001_1600
+      `define UART3End      'h0001_1640
+    skip_if_contains: "`define UART3Base"
+
+  # === 4. UART_CLUSTER.BSV: Interface Declaration ===
+  - file: "{board_dir}/uart_cluster.bsv"
+    anchor_pattern: "interface RS232 uart2_io;"
+    position: "after"
+    code: "    interface RS232 uart3_io;"
+    skip_if_contains: "uart3_io"
+
+  # === 5. UART_CLUSTER.BSV: Interrupt Width ===
+  - file: "{board_dir}/uart_cluster.bsv"
+    anchor_pattern: "method Bit#\\(3\\) uart_interrupts;"
+    position: "replace"
+    code: "    method Bit#(4) uart_interrupts;"
+    skip_if_contains: "Bit#(4) uart_interrupts"
+
+  - file: "{board_dir}/uart_cluster.bsv"
+    anchor_pattern: "interface slave=\\s*c2s_xactor\\.axi_side;\\s*\\n\\s*method Bit#\\(3\\) uart_interrupts;"
+    position: "replace"
+    code: |
+      interface slave= c2s_xactor.axi_side;
+      method Bit#(4) uart_interrupts;
+    skip_if_contains: "c2s_xactor.axi_side;\nmethod Bit#(4) uart_interrupts;"
+
+  # === 6. UART_CLUSTER.BSV: Module Instantiation ===
+  - file: "{board_dir}/uart_cluster.bsv"
+    anchor_pattern: "let uart2 <- mkuart\\(\\);"
+    position: "after"
+    code: "    let uart3 <- mkuart();"
+    skip_if_contains: "let uart3 <-"
+
+  # === 7. UART_CLUSTER.BSV: Address Decoder ===
+  - file: "{board_dir}/uart_cluster.bsv"
+    anchor_pattern: "slave_num =\\s+`UART2_slave_num;"
+    position: "after"
+    code: |
+          else if(addr>= `UART3Base && addr<= `UART3End )
+            slave_num = `UART3_slave_num;
+    skip_if_contains: "`UART3Base"
+
+  # === 8. UART_CLUSTER.BSV: AXI Connection ===
+  - file: "{board_dir}/uart_cluster.bsv"
+    anchor_pattern: "mkConnection \\(fabric\\.v_to_slaves \\[`UART2_slave_num \\],uart2\\.slave\\);"
+    position: "after"
+    code: " \t  mkConnection (fabric.v_to_slaves [`UART3_slave_num ],uart3.slave);"
+    skip_if_contains: "uart3.slave"
+
+  # === 9. UART_CLUSTER.BSV: Interface Wiring ===
+  - file: "{board_dir}/uart_cluster.bsv"
+    anchor_pattern: "interface uart2_io=uart2\\.io;"
+    position: "after"
+    code: "    interface uart3_io=uart3.io;"
+    skip_if_contains: "uart3.io"
+
+  # === 10. UART_CLUSTER.BSV: Interrupt Return ===
+  - file: "{board_dir}/uart_cluster.bsv"
+    anchor_pattern: "return \\{uart2\\.interrupt, uart1\\.interrupt, uart0\\.interrupt\\};"
+    position: "replace"
+    code: "                    return {{uart3.interrupt, uart2.interrupt, uart1.interrupt, uart0.interrupt}};"
+    skip_if_contains: "uart3.interrupt"
+
+  # === 11. PINMUX.BSV: uart3 Wire Declarations ===
+  - file: "{board_dir}/pinmux.bsv"
+    anchor_pattern: "Wire#\\(Bit#\\(1\\)\\) wruart2_tx<-mkDWire\\(0\\);"
+    position: "after"
+    code: |
+          Wire#(Bit#(1)) wruart3_tx<-mkDWire(0);
+          Wire#(Bit#(1)) wruart3_rx<-mkDWire(0);
+    skip_if_contains: "wruart3_tx"
+
+  # === 12. PINMUX.BSV: PeripheralSide Interface Declaration ===
+  - file: "{board_dir}/pinmux.bsv"
+    anchor_pattern: "interface PeripheralSideUART uart2;"
+    position: "after"
+    code: "            interface PeripheralSideUART uart3;"
+    skip_if_contains: "PeripheralSideUART uart3"
+
+  # === 13. PINMUX.BSV: Cell 12 Output Muxer (uart3_rx) ===
+  # uart3_rx is an INPUT, so the OUT muxer keeps val0 -- exactly like cell7
+  # (uart1_rx) and cell9 (uart2_rx). Only the stale "// unused" comment changes.
+  # The anchor carries the preceding cell12_mux==0 arm because the bare
+  # `wrcell12_mux==1?val0: // unused` line appears in BOTH the out and the outen
+  # muxer; anchoring on it alone made this patch and #14 collide (see #14).
+  - file: "{board_dir}/pinmux.bsv"
+    anchor_pattern: "wrcell12_mux==0\\?wrgpioa_a5_out:\\s*\\n\\s*wrcell12_mux==1\\?val0: // unused"
+    position: "replace"
+    code: |
+      wrcell12_mux==0?wrgpioa_a5_out:
+      			wrcell12_mux==1?val0: // uart3_rx is an input; driven value unused
+    skip_if_contains: "wrcell12_mux==1?val0: // uart3_rx is an input"
+
+  # === 14. PINMUX.BSV: Cell 12 Outen Muxer ===
+  # THE functional patch: val1 == "pad is an input" in this codebase (cell7 and
+  # cell9 both use val1 for their uart rx). Previously this patch was a byte-for-
+  # byte duplicate of #13, so #13 replaced the OUT muxer and #14 then self-skipped
+  # on the shared guard -- leaving outen at val0 (drive-as-output) and parking a
+  # constant 1 on the uart3_rx pad. UART3 RX could never receive.
+  - file: "{board_dir}/pinmux.bsv"
+    anchor_pattern: "wrcell12_mux==0\\?wrgpioa_a5_outen: // bi-directional\\s*\\n\\s*wrcell12_mux==1\\?val0: // unused"
+    position: "replace"
+    code: |
+      wrcell12_mux==0?wrgpioa_a5_outen: // bi-directional
+      			wrcell12_mux==1?val1: // uart3_rx is an input
+    skip_if_contains: "wrcell12_mux==1?val1: // uart3_rx is an input"
+
+  # === 15. PINMUX.BSV: Cell 12 RX Rule ===
+  - file: "{board_dir}/pinmux.bsv"
+    anchor_pattern: "rule assign_wr_on_cell12_1\\(wrcell12_mux==1\\);\\s*\\n\\s*wrgpioa_a5_in<=val0;\\s*\\n\\s*endrule"
+    position: "replace"
+    code: |
+          rule assign_wruart3_rx_on_cell12(wrcell12_mux==1);
+            wruart3_rx<=cell12_mux_in;
+          endrule
+    skip_if_contains: "wruart3_rx<=cell12_mux_in"
+
+  # === 16. PINMUX.BSV: Cell 13 Output Muxer (uart3_tx) ===
+  # Same duplicate-anchor collision as #13/#14 used to have. It was benign here
+  # only because val0 is the correct outen for a tx cell anyway, so the arm #17
+  # failed to patch already held the right value. Anchored properly regardless.
+  - file: "{board_dir}/pinmux.bsv"
+    anchor_pattern: "wrcell13_mux==0\\?wrgpioa_a6_out:\\s*\\n\\s*wrcell13_mux==1\\?val0: // unused"
+    position: "replace"
+    code: |
+      wrcell13_mux==0?wrgpioa_a6_out:
+      			wrcell13_mux==1?wruart3_tx: // uart3_tx is an output
+    skip_if_contains: "wrcell13_mux==1?wruart3_tx: // uart3_tx is an output"
+
+  # === 17. PINMUX.BSV: Cell 13 Outen Muxer ===
+  # val0 == "pad is driven as an output" here, matching cell8 (uart1_tx) and
+  # cell10 (uart2_tx). Value is unchanged from stock; this patch exists to
+  # correct the stale "// unused" comment on the arm uart3 now owns.
+  - file: "{board_dir}/pinmux.bsv"
+    anchor_pattern: "wrcell13_mux==0\\?wrgpioa_a6_outen: // bi-directional\\s*\\n\\s*wrcell13_mux==1\\?val0: // unused"
+    position: "replace"
+    code: |
+      wrcell13_mux==0?wrgpioa_a6_outen: // bi-directional
+      			wrcell13_mux==1?val0: // uart3_tx is an output
+    skip_if_contains: "wrcell13_mux==1?val0: // uart3_tx is an output"
+
+  # === 18. PINMUX.BSV: Cell 13 TX Rule ===
+  - file: "{board_dir}/pinmux.bsv"
+    anchor_pattern: "rule assign_wr_on_cell13_1\\(wrcell13_mux==1\\);\\s*\\n\\s*wrgpioa_a6_in<=val0;\\s*\\n\\s*endrule"
+    position: "replace"
+    code: |
+          rule assign_wruart3_tx_on_cell13(wrcell13_mux==1);
+            wrgpioa_a6_in<=val0;
+          endrule
+    skip_if_contains: "wruart3_tx_on_cell13"
+
+  # === 19. PINMUX.BSV: Peripheral Side uart3 Implementation ===
+  - file: "{board_dir}/pinmux.bsv"
+    anchor_pattern: "interface uart2 = interface PeripheralSideUART\\s*[\\s\\S]*?return wruart2_rx;\\s*endmethod\\s*endinterface;\\s*endinterface;"
+    position: "after"
+    code: |
+          interface uart3 = interface PeripheralSideUART
+              interface tx = interface Put
+                method Action put(Bit#(1) in);
+                  wruart3_tx<=in;
+                endmethod
+              endinterface;
+              interface rx = interface Get
+                method ActionValue#(Bit#(1)) get;
+                  return wruart3_rx;
+                endmethod
+              endinterface;
+          endinterface;
+    skip_if_contains: "interface uart3 = interface PeripheralSideUART"
+
+  # === 20. SOC.BSV: uart3 TX Connection ===
+  - file: "{board_dir}/Soc.bsv"
+    anchor_pattern: "mixed_cluster\\.pinmuxtop_peripheral_side\\.uart2\\.tx\\.put\\(uart_cluster\\.uart2_io\\.sout\\);"
+    position: "after"
+    code: "                   mixed_cluster.pinmuxtop_peripheral_side.uart3.tx.put(uart_cluster.uart3_io.sout);"
+    skip_if_contains: "uart3_io.sout"
+
+  # === 21. SOC.BSV: uart3 RX Connection ===
+  - file: "{board_dir}/Soc.bsv"
+    anchor_pattern: "uart_cluster\\.uart2_io\\.sin\\(pinmux_uart2_rx\\);"
+    position: "after"
+    code: |
+                   let pinmux_uart3_rx <- (mixed_cluster.pinmuxtop_peripheral_side.uart3.rx.get);
+                   uart_cluster.uart3_io.sin(pinmux_uart3_rx);
+    skip_if_contains: "pinmux_uart3_rx"
+
+  # === 22. MIXED_CLUSTER.BSV: Interrupt Method Width ===
+  - file: "{board_dir}/mixed_cluster.bsv"
+    anchor_pattern: "method Action interrupts\\(Bit#\\(13\\) inp\\);"
+    position: "replace"
+    code: "                method Action interrupts(Bit#(14) inp);"
+    skip_if_contains: "                method Action interrupts(Bit#(14) inp);"
+
+  - file: "{board_dir}/mixed_cluster.bsv"
+    anchor_pattern: "interface gpio_io= gpio\\.io;\\s*\\n\\s*method Action interrupts\\(Bit#\\(13\\) inp\\);"
+    position: "replace"
+    code: |
+                interface gpio_io= gpio.io;
+                method Action interrupts(Bit#(14) inp);
+    skip_if_contains: "gpio_io= gpio.io;\nmethod Action interrupts(Bit#(14) inp);"
+
+  # === 23. MIXED_CLUSTER.BSV: External Interrupt Bus Width ===
+  - file: "{board_dir}/mixed_cluster.bsv"
+    anchor_pattern: "Wire#\\(Bit#\\(13\\)\\) wr_external_interrupts <- mkDWire\\('d0\\);"
+    position: "replace"
+    code: "            Wire#(Bit#(14)) wr_external_interrupts <- mkDWire('d0);"
+    skip_if_contains: "Bit#(14)) wr_external_interrupts"
+
+  # === 24. MIXED_CLUSTER.BSV: PLIC Vector Width ===
+  - file: "{board_dir}/mixed_cluster.bsv"
+    anchor_pattern: "Bit#\\(35\\) plic_inputs="
+    position: "replace"
+    code: "                    Bit#(36) plic_inputs="
+    skip_if_contains: "Bit#(36) plic_inputs"
+
+  # === 24b. MIXED_CLUSTER.BSV: PLIC Interrupt Slice Update ===
+  - file: "{board_dir}/mixed_cluster.bsv"
+    anchor_pattern: "wr_external_interrupts\\[12:6\\].*wr_external_interrupts\\[5:0\\]"
+    position: "replace"
+    code: "wr_external_interrupts[13:7], i2c1.isint, i2c0.isint, gptimer3.sb_interrupt, gptimer2.sb_interrupt, gptimer1.sb_interrupt, gptimer0.sb_interrupt, lv_gpio_intr, wr_external_interrupts[6:0]"
+    skip_if_contains: "wr_external_interrupts[13:7]"
+
+  # === 25. MIXED_CLUSTER.BSV: PLIC Source Count ===
+  - file: "{board_dir}/mixed_cluster.bsv"
+    anchor_pattern: "Ifc_plic_axi4lite#\\(`paddr, `buswidth, `USERSPACE, 35, 2, 7\\)"
+    position: "replace"
+    code: "Ifc_plic_axi4lite#(`paddr, `buswidth, `USERSPACE, 36, 2, 7)"
+    skip_if_contains: "Ifc_plic_axi4lite#(`paddr, `buswidth, `USERSPACE, 36, 2, 7)"

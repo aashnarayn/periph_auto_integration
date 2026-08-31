@@ -40,9 +40,9 @@ board → root before compilation.
 
 | Path | Role |
 |---|---|
-| `soc_build_config.yaml` | Bill of materials: which peripherals + instances, and the per-instance context (slave numbers, address ranges, PLIC indices, pins, and any **mode** such as `uart3_mode`) |
+| `soc_build_config.yaml` | Bill of materials: which peripherals + instances, and the per-instance context (slave numbers, address ranges, PLIC indices, pins, and any **mode** such as `uart_mode`) |
 | `ip_bsv/<ip>/<ip>.yaml` | Per-IP definition: **anchors** (regex insertion points) + **patches** (code to inject at an anchor) |
-| `ip_bsv/uart_v1/`, `ip_bsv/uart_v1/` | The two UART3 routing variants — through the pinmux vs. wired to dedicated FPGA pins. Selected with a per-instance `uart3_mode` (see §13) |
+| `ip_bsv/uart_v1/` | Both UART3 routing variants in one def — through the pinmux vs. wired to dedicated FPGA pins. Selected with a per-instance `uart_mode` (see §13) |
 | `ip_bsv/gpio_v1/` | Widens on-chip GPIO 32 → 48 and pins the 16 new lines to the FMC-LA bank; one instance per new line (see §14) |
 | `ip_bsv/i2c_v1/` | Adds two more direct-routed I2C controllers (I2C2, I2C3) beside the baseline I2C0/I2C1, with PLIC interrupts (see §15) |
 | `ip_bsv/sspi_v1/` | Adds two more direct-connected SSPI controllers (SPI2, SPI3) beside the baseline SPI0/SPI1, with PLIC interrupts routed through the shared interrupt bus (see §16) |
@@ -59,7 +59,7 @@ board → root before compilation.
 
 Currently integrated (see `soc_build_config.yaml`): **`rtc_v1`** (two instances,
 RTC0 + RTC1), **`uart_v1`** (adds UART3, in one of two routing modes chosen by a
-per-instance `uart3_mode` — see §13), **`gpio_v1`** (widens GPIO 32 → 48 and
+per-instance `uart_mode` — see §13), **`gpio_v1`** (widens GPIO 32 → 48 and
 pins the 16 new lines to FMC — see §14), **`i2c_v1`** (adds I2C2 + I2C3
 beside the baseline I2C0/I2C1 — see §15), **`sspi_v1`** (adds SPI2 + SPI3
 beside the baseline SPI0/SPI1, direct-connected, with PLIC interrupts — see §16),
@@ -183,7 +183,7 @@ For the current RTC + UART3 + GPIO + I2C + SPI + PWM integration, patches touch:
 | `TbSoc.bsv` | *(UART3 `without_pinmux` mode only)* `uart3` sim instance + tx/rx wiring to `chip_io.uart3_io` |
 | `constraints.xdc` | `PACKAGE_PIN` assignments (with fallback pins on conflict); *(UART3 `without_pinmux`)* dedicated UART3 RX/TX pins; *(GPIO)* one FMC pin per new `gpio_N`; *(I2C)* `sda`/`scl` pins per new controller; *(PWM)* one FMC pin per new `pwmN` |
 
-The UART3 rows depend on the per-instance `uart3_mode` (see §13); the GPIO rows
+The UART3 rows depend on the per-instance `uart_mode` (see §13); the GPIO rows
 come from `gpio_v1` (see §14); the I2C rows come from `i2c_v1` (see §15); the SPI
 rows from `sspi_v1` (see §16); the PWM rows from `pwm_v1` (see §18).
 Note that PWM touches **no** `Soc.defines`, `mixed_cluster.bsv` or PLIC state.
@@ -537,7 +537,7 @@ make generate_verilog BOARD=nexys_video -j$(nproc)
 | Pin conflict in XDC phase | Handler used `fallback_pin`; check `pin_map.yaml` and `constraints.xdc`. |
 | `IOSTANDARD {MY_IO_STD}` literal in the XDC | `io_standard` on an `xdc_pin_assign` patch is template-resolved like the pins — the placeholder key must exist in the peripheral's context. |
 | hw/ root out of date after a run | `make sync_bsv_patches` (or `sync_automated_files` for XDC + Verilog). |
-| `no mode named in any instance` | A peripheral has a `modes:` map but no instance field is set to one of the mode names (or the value isn't a declared mode). Set e.g. `uart3_mode: with_pinmux` in the instance. See §13. |
+| `no mode named in any instance` | A peripheral has a `modes:` map but no instance field is set to one of the mode names (or the value isn't a declared mode). Set e.g. `uart_mode: with_pinmux` in the instance. See §13. |
 | Bitstream aborts: clock net driven by a non-clock-capable pin | See the `CLOCK_DEDICATED_ROUTE` note below. |
 
 ### `CLOCK_DEDICATED_ROUTE` in `constraints.xdc`
@@ -589,7 +589,15 @@ PLIC behaviour) — only **how tx/rx reach the outside world** differs:
 
 ### Selecting a mode
 
-The mode is set **per-instance** via `uart3_mode`, sitting beside the pins it
+> **The field name is arbitrary; the *value* is what selects.** `resolve_active_mode()`
+> scans every instance field and picks the one whose **value** matches a key of the
+> peripheral's `modes:` map. All four shipped configs and the template use
+> `uart_mode`, so use that for consistency — but `routing:` or `uart3_mode:` would
+> work identically. Only one mode may be named across a peripheral's instances;
+> naming two raises a conflict error.
+
+
+The mode is set **per-instance** via `uart_mode`, sitting beside the pins it
 governs (the same place rtc keeps its per-instance data). The `modes` map turns
 that value into the IP definition to apply — and that is all you declare:
 
@@ -605,7 +613,7 @@ automated_peripherals:
       xdc_file: '{board_dir}/constraints.xdc'
     instances:
       - instance_id: '3'
-        uart3_mode: with_pinmux     # <- value names a `modes` key = the mode
+        uart_mode: with_pinmux     # <- value names a `modes` key = the mode
         connect_to_plic: true
         plic_index: 36
         # --- used only by without_pinmux (direct-pin routing) ---
@@ -620,7 +628,7 @@ automated_peripherals:
 `scripts/peripheral_auto_integrator.py`): any peripheral may carry a `modes`
 map of value → def_path. The active value is discovered with no extra
 declaration — it is simply the **instance field whose value names one of the
-`modes`** (here `uart3_mode: with_pinmux`, and `with_pinmux` is a `modes` key).
+`modes`** (here `uart_mode: with_pinmux`, and `with_pinmux` is a `modes` key).
 All instances that name a mode must agree, since a peripheral has one def_path.
 Peripherals with no `modes` map keep their plain `def_path`, so single-variant
 peripherals (`rtc_v1`, `gpio_v1`) are unaffected. If the mode is named nowhere,
@@ -628,7 +636,7 @@ instances conflict, or the name is not a declared mode, every phase (apply,
 pre-audit, post-audit) fails fast with a clear message.
 
 > A field name is not needed twice: earlier this used an explicit
-> `mode_selector: uart3_mode` line, which just repeated the instance field name.
+> `mode_selector: uart_mode` line, which just repeated the instance field name.
 > That is gone — the value-in-`modes` convention finds it. (An explicit
 > `mode_selector: <field>` is still honored if you ever want a project-wide
 > top-level default instead of a per-instance value.)
@@ -655,7 +663,7 @@ The two modes touch overlapping files, so switch from a clean baseline:
 ```bash
 make restore_autointeg_patches                 # roll back to pre-automation snapshot
 python3 scripts/indent_tools.py normalize      # keep the baseline clean
-# edit soc_build_config.yaml: set the uart instance's uart3_mode: without_pinmux
+# edit soc_build_config.yaml: set the uart instance's uart_mode: without_pinmux
 make run_autointeg_complete                    # re-apply in the new mode
 make sync_automated_files                      # refresh hw/ root (incl. fpga_top.v + XDC)
 make generate_verilog BOARD=nexys_video -j$(nproc)   # compile-check
@@ -1464,8 +1472,8 @@ tree, producing a byte-identical tree after the first pass, with
 ## 20. Adding a direct-connected watchdog (wd0)
 
 `watchdog_v1` (`ip_bsv/watchdog_v1/watchdog_v1.yaml`)
-adds **one** watchdog timer to the mixed cluster. Like the other `_nopinmux`
-directories it holds **only** the YAML.
+adds **one** watchdog timer to the mixed cluster. Like the other direct-connected
+IP directories it holds **only** the YAML.
 
 ### Reusing RTL that was wired into nothing
 

@@ -2,16 +2,18 @@
 
 An archived, proof-of-concept framework to *automatically integrate* the Real-Time Clock (RTC) peripheral IP into the *Shakti gc2025* SoC.
 
-> **Legacy Warning.** This folder contains the **V1 procedural prototype**. It relies on heavily hardcoded Python script logic and is strictly limited to integrating the RTC. It has been superseded by the modular, multi-peripheral V2 engine located in the repository root. This archive is maintained strictly for reference and isolated RTC testing.
+> **Legacy Warning.** This folder contains the **original V1 procedural prototype**. It relies on heavily hardcoded Python script logic and is strictly limited to integrating the RTC. It has been superseded by the modular, multi-peripheral V2 engine located in the repository root. This archive is maintained strictly for reference and isolated RTC testing.
+
+> **One of three.** `archive/` now holds three V1 frameworks forked from this one: this RTC prototype, `auto_integ_legacy_v1_uart/` (UART3 on dedicated pins) and `auto_integ_legacy_v1_uart_pinmux/` (UART3 through the pinmux). They share the same engine and manager; they differ in `ip_bsv/`, their config, and their hw Makefile sync lists.
 
 ---
 
 ## What this folder is
 
-`auto_integ_legacy_v1/` is the standalone **manager** that installs the V1 procedural automation framework into a fresh `gc2025` clone.
+`auto_integ_legacy_v1_rtc/` is the standalone **manager** that installs the V1 procedural automation framework into a fresh `gc2025` clone.
 
 ```text
-auto_integ_legacy_v1/
+auto_integ_legacy_v1_rtc/
 ├── Makefile          # the legacy manager: clone, inject, status, remove, delete
 ├── configs/          
 │   └── soc_build_config.yaml  # Single static config (RTC only)
@@ -94,16 +96,25 @@ Because this is a procedural prototype, the engine logic is tightly coupled to i
 
 ---
 
-## Main Framework (V2) Interoperability
+## Cross-Framework Interoperability
 
-This legacy archive exists as a sub-directory within the greater `auto_integration` repository. Because users may frequently switch between testing the V1 prototype and the production V2 engine on the same hardware clones, the diagnostic `status` targets are mathematically cross-aware.
+`archive/` holds three V1 frameworks — this one, `auto_integ_legacy_v1_uart/` and
+`auto_integ_legacy_v1_uart_pinmux/` — alongside the Main V2 engine at the
+repository root. Because clones get reused across experiments, every manager's
+`status` target is mutually aware of all the others.
 
 When you execute `make status` from **this legacy Makefile**:
 
-1. **Resemblance Checker:** It calculates a byte-for-byte footprint of the target clone to determine if it is running this Legacy V1 framework or the Main V2 framework (located at `../../files`).
-2. **Cross-Validation:** If the clone was injected using the Main V2 manager, this legacy `status` target will successfully detect it, flag the resemblance as `MAIN V2`, and perform a deep integrity scan against the V2 payload directories.
-3. **Color Routing:** To maintain spatial awareness, this legacy Makefile flags a V1 match as a `GREEN` success (since it is local to this directory), and a V2 match as a `YELLOW` warning (indicating the clone is running the external, newer architecture).
+1. **Candidate scoring.** It computes a byte-for-byte match score for the clone against *this* framework, against Main V2 (`../../files`), and against every sibling legacy framework (`../*/files`). One `[CANDIDATE]` line is printed per framework, so you can see the margin rather than just the verdict.
+2. **Closest-match selection.** The highest scorer wins. Because the sibling frameworks share most of their payload, ties are broken by checking which framework ships a `soc_build_config.yaml` matching the clone's active config.
+3. **Targeted diffing.** The configuration check, deep integrity scan, and documentation check all run against the **winning** framework — not blindly against this directory. A clone injected by the UART manager is diffed against the UART payload, with its own `configs/` and `docs/`.
+4. **Colour routing.** A match on this framework is `GREEN`; Main V2 or a sibling legacy framework is `YELLOW`, flagging that the clone belongs to a different manager.
 
-The Makefile in the **Main Framework root** has the exact same cross-awareness functionality, but logically inverted (V2 is `GREEN`, Legacy V1 is a `YELLOW` warning).
+Sibling frameworks are discovered by glob, so adding a fourth legacy framework to
+`archive/` requires no edit to any `status` target.
+
+The **Main V2 manager** implements the same logic from its own vantage point:
+it scores V2 against every `archive/*/files`, and colours a V2 match `GREEN`
+while any legacy match is a `YELLOW` deprecation warning.
 
 ---

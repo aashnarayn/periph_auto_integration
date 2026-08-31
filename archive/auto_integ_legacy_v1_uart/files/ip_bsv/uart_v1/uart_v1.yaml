@@ -1,0 +1,198 @@
+name: "uart_v1"
+version: "1.0"
+description: "UART3 integration using existing Shakti UART IP"
+
+patches:
+  # === 1. SOC.DEFINES: Slave Count ===
+  - file: "{board_dir}/Soc.defines"
+    anchor_pattern: "^`define UARTCluster_Num_Slaves\\s+4"
+    position: "replace"
+    code: "`define UARTCluster_Num_Slaves 5"
+    skip_if_contains: "`define UARTCluster_Num_Slaves 5"
+
+  # === 2. SOC.DEFINES: Slave Numbers ===
+  - file: "{board_dir}/Soc.defines"
+    anchor_pattern: "^`define UARTCluster_err_slave_num\\s+3"
+    position: "replace"
+    code: |
+      `define UART3_slave_num 3
+      `define UARTCluster_err_slave_num 4
+    skip_if_contains: "`define UART3_slave_num"
+
+  # === 3. SOC.DEFINES: Memory Map ===
+  - file: "{board_dir}/Soc.defines"
+    anchor_pattern: "^`define UART2End.*$"
+    position: "replace"
+    code: |
+      `define UART2End      'h0001_1540
+      `define UART3Base     'h0001_1600
+      `define UART3End      'h0001_1640
+    skip_if_contains: "`define UART3Base"
+
+  # === 4. UART_CLUSTER.BSV: Interface Declaration ===
+  - file: "{board_dir}/uart_cluster.bsv"
+    anchor_pattern: "interface RS232 uart2_io;"
+    position: "after"
+    code: "    interface RS232 uart3_io;"
+    skip_if_contains: "uart3_io"
+
+  # === 5. UART_CLUSTER.BSV: Interface Interrupt Width ===
+  - file: "{board_dir}/uart_cluster.bsv"
+    anchor_pattern: "interface AXI4_Lite_Slave_IFC#\\(`paddr, `buswidth, `USERSPACE\\) slave;\\s*\\n\\s*method Bit#\\(3\\) uart_interrupts;"
+    position: "replace"
+    code: |
+        interface AXI4_Lite_Slave_IFC#(`paddr, `buswidth, `USERSPACE) slave;
+        method Bit#(4) uart_interrupts;
+    skip_if_contains: "USERSPACE) slave;\nmethod Bit#(4) uart_interrupts;"
+
+  # === 6. UART_CLUSTER.BSV: Implementation Interrupt Width ===
+  - file: "{board_dir}/uart_cluster.bsv"
+    anchor_pattern: "method Bit#\\(3\\) uart_interrupts;"
+    position: "replace"
+    code: "      method Bit#(4) uart_interrupts;"
+    skip_if_contains: "      method Bit#(4) uart_interrupts;"
+
+  # === 6. UART_CLUSTER.BSV: Module Instantiation ===
+  - file: "{board_dir}/uart_cluster.bsv"
+    anchor_pattern: "let uart2 <- mkuart\\(\\);"
+    position: "after"
+    code: "    let uart3 <- mkuart();"
+    skip_if_contains: "let uart3 <-"
+
+  # === 7. UART_CLUSTER.BSV: Address Decoder ===
+  - file: "{board_dir}/uart_cluster.bsv"
+    anchor_pattern: "slave_num =\\s+`UART2_slave_num;"
+    position: "after"
+    code: |
+          else if(addr>= `UART3Base && addr<= `UART3End )
+            slave_num = `UART3_slave_num;
+    skip_if_contains: "`UART3Base"
+
+  # === 8. UART_CLUSTER.BSV: AXI Connection ===
+  - file: "{board_dir}/uart_cluster.bsv"
+    anchor_pattern: "mkConnection \\(fabric\\.v_to_slaves \\[`UART2_slave_num \\],uart2\\.slave\\);"
+    position: "after"
+    code: " \t  mkConnection (fabric.v_to_slaves [`UART3_slave_num ],uart3.slave);"
+    skip_if_contains: "uart3.slave"
+
+  # === 9. UART_CLUSTER.BSV: Interface Wiring ===
+  - file: "{board_dir}/uart_cluster.bsv"
+    anchor_pattern: "interface uart2_io=uart2\\.io;"
+    position: "after"
+    code: "    interface uart3_io=uart3.io;"
+    skip_if_contains: "uart3.io"
+
+  # === 10. UART_CLUSTER.BSV: Interrupt Return ===
+  - file: "{board_dir}/uart_cluster.bsv"
+    anchor_pattern: "return \\{uart2\\.interrupt, uart1\\.interrupt, uart0\\.interrupt\\};"
+    position: "replace"
+    code: "                    return {{uart3.interrupt, uart2.interrupt, uart1.interrupt, uart0.interrupt}};"
+    skip_if_contains: "uart3.interrupt"
+
+  # === 11. TBSOC.BSV: Instantiate uart3 ===
+  - file: "{board_dir}/TbSoc.bsv"
+    anchor_pattern: "UserInterface#\\(`paddr,`buswidth,16\\) uart2 <- mkuart_user\\(5,0,0\\);"
+    position: "after"
+    code: "  UserInterface#(`paddr,`buswidth,16) uart3 <- mkuart_user(5,0,0);"
+    skip_if_contains: "uart3 <- mkuart_user"
+
+  # === 12. TBSOC.BSV: uart3 TX path ===
+  - file: "{board_dir}/TbSoc.bsv"
+    anchor_pattern: "soc\\.chip_io\\.uart0_io\\.sin\\(uart0\\.io\\.sout\\);"
+    position: "after"
+    code: "      soc.chip_io.uart3_io.sin(uart3.io.sout);"
+    skip_if_contains: "soc.chip_io.uart3_io.sin"
+
+  # === 13. TBSOC.BSV: uart3 RX path ===
+  - file: "{board_dir}/TbSoc.bsv"
+    anchor_pattern: "uart0\\.io\\.sin\\(soc\\.chip_io\\.uart0_io\\.sout\\);"
+    position: "after"
+    code: "      uart3.io.sin(soc.chip_io.uart3_io.sout);"
+    skip_if_contains: "uart3.io.sin"
+
+  # === 14. SOC.BSV: Add uart3 interface declaration ===
+  - file: "{board_dir}/Soc.bsv"
+    anchor_pattern: "interface RS232 uart0_io;"
+    position: "after"
+    code: "    interface RS232 uart3_io;"
+    skip_if_contains: "interface RS232 uart3_io;"
+
+  # === 15. SOC.BSV: Export uart3 directly ===
+  - file: "{board_dir}/Soc.bsv"
+    anchor_pattern: "interface uart0_io = uart_cluster\\.uart0_io;"
+    position: "after"
+    code: "    interface uart3_io = uart_cluster.uart3_io;"
+    skip_if_contains: "interface uart3_io = uart_cluster.uart3_io;"  
+
+  # === 16. MIXED_CLUSTER.BSV: External Interrupt Bus Width ===
+  - file: "{board_dir}/mixed_cluster.bsv"
+    anchor_pattern: "Wire#\\(Bit#\\(13\\)\\) wr_external_interrupts <- mkDWire\\('d0\\);"
+    position: "replace"
+    code: "            Wire#(Bit#(14)) wr_external_interrupts <- mkDWire('d0);"
+    skip_if_contains: "Bit#(14)) wr_external_interrupts"
+
+  # === 17. MIXED_CLUSTER.BSV: PLIC Vector ===
+  - file: "{board_dir}/mixed_cluster.bsv"
+    anchor_pattern: "Bit#\\(35\\) plic_inputs=\\s*\\{wr_external_interrupts\\[12:6\\],\\s*i2c1\\.isint,\\s*i2c0\\.isint,\\s*gptimer3\\.sb_interrupt,\\s*gptimer2\\.sb_interrupt,\\s*gptimer1\\.sb_interrupt,\\s*gptimer0\\.sb_interrupt,\\s*lv_gpio_intr,\\s*wr_external_interrupts\\[5:0\\]\\};"
+    position: "replace"
+    code: |
+                      Bit#(36) plic_inputs = {{wr_external_interrupts[13:7], i2c1.isint, i2c0.isint, gptimer3.sb_interrupt, gptimer2.sb_interrupt, gptimer1.sb_interrupt, gptimer0.sb_interrupt, lv_gpio_intr, wr_external_interrupts[6:0]}};
+    skip_if_contains: "Bit#(36) plic_inputs"
+
+  # === 18. MIXED_CLUSTER.BSV: PLIC Source Count ===
+  - file: "{board_dir}/mixed_cluster.bsv"
+    anchor_pattern: "Ifc_plic_axi4lite#\\(`paddr, `buswidth, `USERSPACE, 35, 2, 7\\)"
+    position: "replace"
+    code: "Ifc_plic_axi4lite#(`paddr, `buswidth, `USERSPACE, 36, 2, 7)"
+    skip_if_contains: "Ifc_plic_axi4lite#(`paddr, `buswidth, `USERSPACE, 36, 2, 7)"
+
+  # === 19. MIXED_CLUSTER.BSV: Interface interrupt width ===
+  - file: "{board_dir}/mixed_cluster.bsv"
+    anchor_pattern: "interface PeripheralSide pinmuxtop_peripheral_side;\\s*\\n\\s*\\(\\*always_ready, always_enabled\\*\\)\\s*\\n\\s*method Action interrupts\\(Bit#\\(13\\) inp\\);"
+    position: "replace"
+    code: |
+      interface PeripheralSide pinmuxtop_peripheral_side;
+      (*always_ready, always_enabled*)
+      method Action interrupts(Bit#(14) inp);
+    skip_if_contains: "always_enabled*)\nmethod Action interrupts(Bit#(14) inp);"
+    
+  # === 20. MIXED_CLUSTER.BSV: Implementation interrupt width ===
+  - file: "{board_dir}/mixed_cluster.bsv"
+    anchor_pattern: "interface gpio_io= gpio\\.io;\\s*\\n\\s*method Action interrupts\\(Bit#\\(13\\) inp\\);"
+    position: "replace"
+    code: |
+      interface gpio_io= gpio.io;
+      method Action interrupts(Bit#(14) inp);
+    skip_if_contains: "gpio_io= gpio.io;\nmethod Action interrupts(Bit#(14) inp);"
+
+  # === 20. FPGA_TOP.V: Add UART3 ports ===
+  - file: "{board_dir}/fpga_top.v"
+    anchor_pattern: "output\\s+uart0_SOUT,"
+    position: "after"
+    code: |
+      input         uart3_SIN,
+      output        uart3_SOUT,
+    skip_if_contains: "uart3_SIN"
+
+  # === 21. FPGA_TOP.V: Connect UART3 to SoC ===
+  - file: "{board_dir}/fpga_top.v"
+    anchor_pattern: "\\.uart0_io_SOUT\\(uart0_SOUT\\),"
+    position: "after"
+    code: |
+      .uart3_io_SIN(uart3_SIN),
+      .uart3_io_SOUT(uart3_SOUT),
+    skip_if_contains: ".uart3_io_SIN"
+    
+  # === 22. CONSTRAINTS.XDC: Assign UART3 RX directly ===
+  - type: "xdc_pin_assign"
+    file: "{xdc_file}"
+    port_name: "{uart_rx_port_name}"
+    target_board_pin: "{uart_rx_board_pin}"
+    fallback_pin: "{uart_rx_fallback}"
+
+  # === 23. CONSTRAINTS.XDC: Assign UART3 TX directly ===
+  - type: "xdc_pin_assign"
+    file: "{xdc_file}"
+    port_name: "{uart_tx_port_name}"
+    target_board_pin: "{uart_tx_board_pin}"
+    fallback_pin: "{uart_tx_fallback}"

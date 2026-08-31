@@ -142,6 +142,15 @@ remove_automation:
 # =============================================================================
 # TARGET E: STATUS CHECK (Deep Integrity Scan)
 # =============================================================================
+# =============================================================================
+# FRAMEWORK CANDIDATE DISCOVERY (used by `status`)
+# =============================================================================
+# Every archived legacy framework is a candidate, discovered by glob -- adding a
+# new archive/<name>/ needs no edit here. `status` scores the clone against the
+# V2 payload and against each of these, then reports and diffs against whichever
+# one it most resembles.
+LEGACY_FILE_DIRS := $(sort $(wildcard archive/*/files))
+
 .PHONY: status
 status:
 	@echo "$(BLUE)=== Status for: $(CLONE_DIR) ===$(NC)"
@@ -152,65 +161,87 @@ status:
 	else \
 		echo "$(GREEN)[STATUS] Clone exists and framework IS INSTALLED.$(NC)"; \
 		echo "$(BLUE)--- Framework Resemblance Analysis ---$(NC)"; \
-		main_score=0; legacy_score=0; \
-		for item in scripts ip_bsv templates Makefile master_constraints.xdc; do \
-			hw_target="$(HW_DIR)/$$item"; \
-			if [ "$$item" = "master_constraints.xdc" ]; then hw_target="$(HW_DIR)/boards/$(BOARD)/master_constraints.xdc"; fi; \
-			if [ -d "files/$$item" ]; then \
-				for f in $$(find "files/$$item" -type f 2>/dev/null | grep -v '__pycache__' | grep -v '\.pyc$$'); do \
-					rel=$${f#files/}; \
-					if [ -f "$(HW_DIR)/$$rel" ] && diff -wBq "$$f" "$(HW_DIR)/$$rel" > /dev/null 2>&1; then main_score=$$((main_score+1)); fi; \
-				done; \
-			elif [ -f "files/$$item" ]; then \
-				if [ -f "$$hw_target" ] && diff -wBq "files/$$item" "$$hw_target" > /dev/null 2>&1; then main_score=$$((main_score+1)); fi; \
-			fi; \
-		done; \
-		if [ -d "archive/auto_integ_legacy_v1/files" ]; then \
+		score_of() { \
+			base="$$1"; s=0; \
 			for item in scripts ip_bsv templates Makefile master_constraints.xdc; do \
 				hw_target="$(HW_DIR)/$$item"; \
 				if [ "$$item" = "master_constraints.xdc" ]; then hw_target="$(HW_DIR)/boards/$(BOARD)/master_constraints.xdc"; fi; \
-				if [ -d "archive/auto_integ_legacy_v1/files/$$item" ]; then \
-					for f in $$(find "archive/auto_integ_legacy_v1/files/$$item" -type f 2>/dev/null | grep -v '__pycache__' | grep -v '\.pyc$$'); do \
-						rel=$${f#archive/auto_integ_legacy_v1/files/}; \
-						if [ -f "$(HW_DIR)/$$rel" ] && diff -wBq "$$f" "$(HW_DIR)/$$rel" > /dev/null 2>&1; then legacy_score=$$((legacy_score+1)); fi; \
+				if [ -d "$$base/$$item" ]; then \
+					for f in $$(find "$$base/$$item" -type f 2>/dev/null | grep -v '__pycache__' | grep -v '\.pyc$$'); do \
+						rel=$${f#$$base/}; \
+						if [ -f "$(HW_DIR)/$$rel" ] && diff -wBq "$$f" "$(HW_DIR)/$$rel" >/dev/null 2>&1; then s=$$((s+1)); fi; \
 					done; \
-				elif [ -f "archive/auto_integ_legacy_v1/files/$$item" ]; then \
-					if [ -f "$$hw_target" ] && diff -wBq "archive/auto_integ_legacy_v1/files/$$item" "$$hw_target" > /dev/null 2>&1; then legacy_score=$$((legacy_score+1)); fi; \
+				elif [ -f "$$base/$$item" ]; then \
+					if [ -f "$$hw_target" ] && diff -wBq "$$base/$$item" "$$hw_target" >/dev/null 2>&1; then s=$$((s+1)); fi; \
 				fi; \
 			done; \
-		fi; \
-		active_base="files"; active_name="MAIN V2"; config_base="configs"; \
-		if [ $$legacy_score -gt $$main_score ]; then \
-			active_base="archive/auto_integ_legacy_v1/files"; active_name="LEGACY V1"; config_base="archive/auto_integ_legacy_v1/configs"; \
-			echo "$(YELLOW)[RESEMBLANCE] Clone heavily resembles $$active_name framework (Score: $$legacy_score vs $$main_score).$(NC)"; \
-		else \
-			echo "$(GREEN)[RESEMBLANCE] Clone heavily resembles $$active_name framework (Score: $$main_score vs $$legacy_score).$(NC)"; \
-		fi; \
-		echo "$(BLUE)--- Configuration Check ($$active_name) ---$(NC)"; \
-		if [ -f "$(HW_DIR)/soc_build_config.yaml" ]; then \
-			if [ -f "$$config_base/$(CONFIG_SELECT)" ] && diff -wBq "$$config_base/$(CONFIG_SELECT)" "$(HW_DIR)/soc_build_config.yaml" > /dev/null 2>&1; then \
-				if [ "$$active_name" = "LEGACY V1" ]; then \
-					echo "$(YELLOW)[CONFIG] Active config MATCHES '$$config_base/$(CONFIG_SELECT)'.$(NC)"; \
-				else \
-					echo "$(GREEN)[CONFIG] Active config MATCHES '$$config_base/$(CONFIG_SELECT)'.$(NC)"; \
+			echo $$s; \
+		}; \
+		cfg_matches() { \
+			__cdir="$$1"; \
+			[ -f "$(HW_DIR)/soc_build_config.yaml" ] || return 1; \
+			for __c in "$$__cdir"/*.yaml; do \
+				[ -f "$$__c" ] || continue; \
+				if diff -wBq "$$__c" "$(HW_DIR)/soc_build_config.yaml" >/dev/null 2>&1; then return 0; fi; \
+			done; \
+			return 1; \
+		}; \
+		tbl=$$(mktemp); \
+		printf '%s\t%s\t%s\t%s\n' "MAIN V2" "files" "configs" "$$(score_of files)" >> $$tbl; \
+		for lf in $(LEGACY_FILE_DIRS); do \
+			ldir=$$(dirname "$$lf"); lname=$$(basename "$$ldir"); \
+			printf '%s\t%s\t%s\t%s\n' "$$lname" "$$lf" "$$ldir/configs" "$$(score_of $$lf)" >> $$tbl; \
+		done; \
+		while IFS="$$(printf '\t')" read -r n b c s; do \
+			echo "$(BLUE)  [CANDIDATE] $$n -> $$s matching file(s)$(NC)"; \
+		done < $$tbl; \
+		best_score=$$(cut -f4 $$tbl | sort -rn | head -1); \
+		tiedf=$$(mktemp); \
+		awk -F'\t' -v m="$$best_score" '$$4==m' $$tbl > $$tiedf; \
+		n_tied=$$(grep -c . $$tiedf); \
+		chosen=$$(head -1 $$tiedf); \
+		if [ "$$n_tied" -gt 1 ]; then \
+			echo "$(YELLOW)[TIE-BREAK] $$n_tied frameworks tied at $$best_score; disambiguating on soc_build_config.yaml.$(NC)"; \
+			while IFS="$$(printf '\t')" read -r n b c s; do \
+				if cfg_matches "$$c"; then \
+					chosen=$$(printf '%s\t%s\t%s\t%s' "$$n" "$$b" "$$c" "$$s"); \
+					echo "$(YELLOW)[TIE-BREAK] Active config matches a config shipped by '$$n' -- selecting it.$(NC)"; \
+					break; \
 				fi; \
+			done < $$tiedf; \
+		fi; \
+		rm -f $$tiedf; \
+		active_name=$$(printf '%s' "$$chosen" | cut -f1); \
+		active_base=$$(printf '%s' "$$chosen" | cut -f2); \
+		config_base=$$(printf '%s' "$$chosen" | cut -f3); \
+		rm -f $$tbl; \
+		if [ "$$active_name" = "MAIN V2" ]; then \
+			active_label="MAIN V2"; \
+			echo "$(GREEN)[RESEMBLANCE] Clone most resembles $$active_label (score $$best_score).$(NC)"; \
+		else \
+			active_label="LEGACY V1 / $$active_name"; \
+			echo "$(YELLOW)[RESEMBLANCE] Clone most resembles $$active_label (score $$best_score) -- DEPRECATED architecture.$(NC)"; \
+		fi; \
+		echo "$(BLUE)--- Configuration Check ($$active_label) ---$(NC)"; \
+		if [ -f "$(HW_DIR)/soc_build_config.yaml" ]; then \
+			if [ -f "$$config_base/$(CONFIG_SELECT)" ] && diff -wBq "$$config_base/$(CONFIG_SELECT)" "$(HW_DIR)/soc_build_config.yaml" >/dev/null 2>&1; then \
+				echo "$(GREEN)[CONFIG] Active config MATCHES '$$config_base/$(CONFIG_SELECT)'.$(NC)"; \
 			else \
 				match_found=0; \
 				for cfg in $$config_base/*.yaml; do \
-					if [ -f "$$cfg" ] && diff -wBq "$$cfg" "$(HW_DIR)/soc_build_config.yaml" > /dev/null 2>&1; then \
+					if [ -f "$$cfg" ] && diff -wBq "$$cfg" "$(HW_DIR)/soc_build_config.yaml" >/dev/null 2>&1; then \
 						echo "$(YELLOW)[CONFIG] Active config differs from '$(CONFIG_SELECT)', but MATCHES '$$cfg'.$(NC)"; \
-						match_found=1; \
-						break; \
+						match_found=1; break; \
 					fi; \
 				done; \
 				if [ $$match_found -eq 0 ]; then \
-					echo "$(RED)[CONFIG] Active config DOES NOT MATCH any stored config in $$config_base! (Custom/Modified)$(NC)"; \
+					echo "$(RED)[CONFIG] Active config matches no config in $$config_base (custom/modified).$(NC)"; \
 				fi; \
 			fi; \
 		else \
 			echo "$(RED)[CONFIG] No soc_build_config.yaml found in clone!$(NC)"; \
 		fi; \
-		echo "$(BLUE)--- Deep Integrity Scan ($$active_name) ---$(NC)"; \
+		echo "$(BLUE)--- Deep Integrity Scan ($$active_label) ---$(NC)"; \
 		mismatch=0; \
 		for item in scripts ip_bsv Makefile master_constraints.xdc; do \
 			hw_target="$(HW_DIR)/$$item"; \
@@ -219,65 +250,51 @@ status:
 				for f in $$(find "$$active_base/$$item" -type f 2>/dev/null | grep -v '__pycache__' | grep -v '\.pyc$$'); do \
 					rel=$${f#$$active_base/}; \
 					if [ ! -f "$(HW_DIR)/$$rel" ]; then \
-						echo "$(RED)[MISSING] $$rel (expected by $$active_name)$(NC)"; \
-						mismatch=1; \
-					elif ! diff -wBq "$$f" "$(HW_DIR)/$$rel" > /dev/null 2>&1; then \
-						echo "$(YELLOW)[MODIFIED] $$rel differs from reference$(NC)"; \
-						mismatch=1; \
+						echo "$(RED)[MISSING] $$rel (expected by $$active_label)$(NC)"; mismatch=1; \
+					elif ! diff -wBq "$$f" "$(HW_DIR)/$$rel" >/dev/null 2>&1; then \
+						echo "$(YELLOW)[MODIFIED] $$rel differs from reference$(NC)"; mismatch=1; \
 					fi; \
 				done; \
 			elif [ -f "$$active_base/$$item" ]; then \
 				if [ ! -f "$$hw_target" ]; then \
-					echo "$(RED)[MISSING] $$item (expected by $$active_name at $$hw_target)$(NC)"; \
-					mismatch=1; \
-				elif ! diff -wBq "$$active_base/$$item" "$$hw_target" > /dev/null 2>&1; then \
-					echo "$(YELLOW)[MODIFIED] $$item differs from reference$(NC)"; \
-					mismatch=1; \
+					echo "$(RED)[MISSING] $$item (expected by $$active_label at $$hw_target)$(NC)"; mismatch=1; \
+				elif ! diff -wBq "$$active_base/$$item" "$$hw_target" >/dev/null 2>&1; then \
+					echo "$(YELLOW)[MODIFIED] $$item differs from reference$(NC)"; mismatch=1; \
 				fi; \
 			fi; \
 			if [ -d "$(HW_DIR)/$$item" ]; then \
 				for f in $$(find "$(HW_DIR)/$$item" -type f 2>/dev/null | grep -v '__pycache__' | grep -v '\.pyc$$'); do \
 					rel=$${f#$(HW_DIR)/}; \
 					if [ ! -f "$$active_base/$$rel" ]; then \
-						echo "$(YELLOW)[ORPHAN] $$rel (present in clone, missing in $$active_name framework)$(NC)"; \
-						mismatch=1; \
+						echo "$(YELLOW)[ORPHAN] $$rel (present in clone, missing in $$active_label)$(NC)"; mismatch=1; \
 					fi; \
 				done; \
 			elif [ -f "$$hw_target" ]; then \
 				if [ ! -f "$$active_base/$$item" ]; then \
-					echo "$(YELLOW)[ORPHAN] $$item (present in clone, missing in $$active_name framework)$(NC)"; \
-					mismatch=1; \
+					echo "$(YELLOW)[ORPHAN] $$item (present in clone, missing in $$active_label)$(NC)"; mismatch=1; \
 				fi; \
 			fi; \
 		done; \
 		if [ $$mismatch -eq 0 ]; then \
-			if [ "$$active_name" = "LEGACY V1" ]; then \
-				echo "$(YELLOW)[INTEGRITY] All scripts and IP files MATCH $$active_name perfectly.$(NC)"; \
-			else \
-				echo "$(GREEN)[INTEGRITY] All scripts and IP files MATCH $$active_name perfectly.$(NC)"; \
-			fi; \
+			echo "$(GREEN)[INTEGRITY] All scripts and IP files MATCH $$active_label perfectly.$(NC)"; \
 		fi; \
-		echo "$(BLUE)--- Documentation Check ---$(NC)"; \
-		doc_mismatch=0; doc_base="docs"; \
-		if [ "$$active_name" = "LEGACY V1" ] && [ -d "archive/auto_integ_legacy_v1/docs" ]; then doc_base="archive/auto_integ_legacy_v1/docs"; fi; \
+		echo "$(BLUE)--- Documentation Check ($$active_label) ---$(NC)"; \
+		doc_mismatch=0; \
+		if [ "$$active_name" = "MAIN V2" ]; then doc_base="docs"; else doc_base="archive/$$active_name/docs"; fi; \
 		if [ -d "$$doc_base" ]; then \
 			for f in $$(find "$$doc_base" -type f 2>/dev/null | grep -v '__pycache__' | grep -v '\.pyc$$'); do \
 				rel=$${f#$$doc_base/}; \
 				if [ ! -f "$(HW_DIR)/$$rel" ]; then \
-					echo "$(RED)[DOC NOTE] Missing in clone: $$rel$(NC)"; \
-					doc_mismatch=1; \
-				elif ! diff -wBq "$$f" "$(HW_DIR)/$$rel" > /dev/null 2>&1; then \
-					echo "$(YELLOW)[DOC NOTE] Modified in clone: $$rel$(NC)"; \
-					doc_mismatch=1; \
+					echo "$(RED)[DOC NOTE] Missing in clone: $$rel$(NC)"; doc_mismatch=1; \
+				elif ! diff -wBq "$$f" "$(HW_DIR)/$$rel" >/dev/null 2>&1; then \
+					echo "$(YELLOW)[DOC NOTE] Modified in clone: $$rel$(NC)"; doc_mismatch=1; \
 				fi; \
 			done; \
+		else \
+			echo "$(YELLOW)[DOC NOTE] No docs/ directory for $$active_label$(NC)"; \
 		fi; \
 		if [ $$doc_mismatch -eq 0 ]; then \
-			if [ "$$active_name" = "LEGACY V1" ]; then \
-				echo "$(YELLOW)[DOCS] Documentation MATCHES $$active_name perfectly.$(NC)"; \
-			else \
-				echo "$(GREEN)[DOCS] Documentation MATCHES perfectly.$(NC)"; \
-			fi; \
+			echo "$(GREEN)[DOCS] Documentation MATCHES $$active_label perfectly.$(NC)"; \
 		fi; \
 		echo "$(BLUE)--- Additional Info ---$(NC)"; \
 		if [ -d "$(HW_DIR)/scripts/__pycache__" ]; then \

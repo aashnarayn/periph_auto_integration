@@ -38,14 +38,13 @@ gc2025/hw/
 │   │   ├── rtc_v1.yaml
 │   │   ├── rtc_v1.bsv
 │   │   └── rtc.defines
-│   ├── uart_v1/                 # UART3 through the pinmux
-│   ├── uart_v1/        # UART3 on dedicated pins   (YAML only)
-│   ├── gpio_v1/                 # GPIO 32 -> 48             (YAML only)
-│   ├── i2c_v1/                  # I2C2 + I2C3               (YAML only)
-│   ├── sspi_v1/        # SPI2 + SPI3               (YAML only)
-│   ├── pwm_v1/         # PWM6..PWM9                (YAML only)
-│   ├── gptimer_v1/     # GPTimer4                  (YAML only)
-│   └── watchdog_v1/    # wd0 watchdog              (YAML only)
+│   ├── uart_v1/                 # UART3, either routing mode  (YAML only)
+│   ├── gpio_v1/                 # GPIO 32 -> 48               (YAML only)
+│   ├── i2c_v1/                  # I2C2 + I2C3                 (YAML only)
+│   ├── sspi_v1/                 # SPI2 + SPI3                 (YAML only)
+│   ├── pwm_v1/                  # PWM6..PWM9                  (YAML only)
+│   ├── gptimer_v1/              # GPTimer4                    (YAML only)
+│   └── watchdog_v1/             # wd0 watchdog                (YAML only)
 ├── .automation_backup/          # Pristine baseline + manifest.json
 └── README_AUTOMATION.md         # This file
 ```

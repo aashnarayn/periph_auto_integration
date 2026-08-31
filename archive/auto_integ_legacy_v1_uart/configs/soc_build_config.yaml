@@ -1,0 +1,39 @@
+# Centralized config file for Peripheral Automation
+# Location: gc2025/hw/soc_build_config.yaml
+
+target_board: "nexys_video"
+board_dir: "boards/nexys_video"
+pin_map_path: "boards/nexys_video/pin_map.yaml"
+
+automated_peripherals:
+  - name: "uart_v1"
+    def_path: "ip_bsv/uart_v1/uart_v1.yaml"
+    context:
+      # Generic Verilog boundary identifier
+      # Required by peripheral_auto_integrator.py validation
+      verilog_port_name: "uart3"
+
+      # UART slave configuration
+      uart_slave_macro: "UART3_slave_num"
+      uart_slave_val: "3"
+
+      # UART address map
+      uart_base_macro: "UART3Base"
+      uart_base_addr: "0001_1600"
+      uart_end_macro: "UART3End"
+      uart_end_addr: "0001_1640"
+
+      # Direct UART3 top-level Verilog ports
+      uart_rx_port_name: "uart3_SIN"
+      uart_tx_port_name: "uart3_SOUT"
+
+      # XDC configuration
+      xdc_file: "{board_dir}/constraints.xdc"
+
+      # Desired PMOD JA pins
+      uart_rx_board_pin: "ja[9]"
+      uart_tx_board_pin: "ja[10]"
+
+      # Fallback pins for signals displaced from JA
+      uart_rx_fallback: "fmc_la_p[06]"
+      uart_tx_fallback: "fmc_la_n[06]"

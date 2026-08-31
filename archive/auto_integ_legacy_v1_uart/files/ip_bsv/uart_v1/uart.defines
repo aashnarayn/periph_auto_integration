@@ -1,0 +1,35 @@
+// UART Register Map
+
+`define UART_TX_ADDR        8'h00
+`define UART_RX_ADDR        8'h08
+`define UART_STATUS_ADDR    8'h10
+`define UART_CONTROL_ADDR   8'h18
+
+// Status Bits
+
+`define UART_TX_READY       0
+`define UART_RX_VALID       1
+
+// UART Cluster Configuration
+
+`define UARTCluster_Num_Slaves 5
+
+`define UART0_slave_num 0
+`define UART1_slave_num 1
+`define UART2_slave_num 2
+`define UART3_slave_num 3
+`define UARTCluster_err_slave_num 4
+
+// UART Address Map
+
+`define UART0Base 'h0001_1300
+`define UART0End  'h0001_1340
+
+`define UART1Base 'h0001_1400
+`define UART1End  'h0001_1440
+
+`define UART2Base 'h0001_1500
+`define UART2End  'h0001_1540
+
+`define UART3Base 'h0001_1600
+`define UART3End  'h0001_1640

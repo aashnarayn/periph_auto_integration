@@ -285,6 +285,9 @@ def patch_file_regex(filepath: str, anchor_pattern: str, injection: str,
 
     try:
         match = re.search(anchor_pattern, content, re.MULTILINE)
+        print("PATCH FILE:", filepath) #added here 3 lines
+        print("ANCHOR:", anchor_pattern)
+        print("FOUND:", bool(match))
     except re.error as e:
         print(f"[ERROR] Invalid regex pattern in {filepath}: {anchor_pattern[:40]}... ({e})")
         return False
@@ -341,12 +344,6 @@ def handle_plic_vector_patch(filepath: str, patch: Dict, context: Dict, dry_run:
     c_pat = patch['concat_anchor_pattern']
     skip = patch.get('skip_if_contains', '').format(**context)
 
-    if skip:
-        with open(filepath, 'r') as f:
-            if skip in f.read():
-                print(f"  [INFO] Skipping PLIC: '{signal}' already present")
-                return True
-
     with open(filepath, 'r') as f:
         content = f.read()
 
@@ -354,8 +351,19 @@ def handle_plic_vector_patch(filepath: str, patch: Dict, context: Dict, dry_run:
     if not w_match:
         print(f"[ERROR] Could not find PLIC width declaration: {w_pat}")
         return False
-        
-    old_w = int(w_match.group(1))
+    current_w = int(w_match.group(1))
+
+    if skip and skip in content:
+        # Re-run on an already-integrated tree: the width anchor already holds
+        # the final value. Downstream patches keyed on {new_plic_width} (e.g.
+        # the mkplic wrapper width patch) need that same value to evaluate
+        # their own skip_if_contains -- not old_w+1, which would desync them
+        # from the file and cause a stale re-apply instead of a clean skip.
+        context['new_plic_width'] = str(current_w)
+        print(f"  [INFO] Skipping PLIC: '{signal}' already present")
+        return True
+
+    old_w = current_w
     new_w = old_w + 1
     context['new_plic_width'] = str(new_w)
     print(f"  [INFO] Width: {old_w} → {new_w}")
@@ -576,7 +584,10 @@ def execute_integration(config: Dict, dry_run: bool = False, phase: str = 'all')
                             return False
                 else:
                     inj = patch['code'].format(**ctx)
-                    if not patch_file_regex(resolved, patch.get('anchor_pattern', ''), inj, patch.get('position', 'after'), patch.get('skip_if_contains'), dry_run): return False
+                    skip = patch.get('skip_if_contains')
+                    if skip:
+                        skip = skip.format(**ctx)
+                    if not patch_file_regex(resolved, patch.get('anchor_pattern', ''), inj, patch.get('position', 'after'), skip, dry_run): return False
 
             # Exit peripheral loop early for bsvpath phase
             if phase == 'bsvpath':

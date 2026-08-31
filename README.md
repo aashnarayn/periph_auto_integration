@@ -5,8 +5,8 @@ A framework to *automatically integrate* peripheral IP into an SoC by RTL manipu
 > **Tentative doc.** This describes the *setup* layer (this folder and its
 > Makefile). It is expected to keep evolving as the setup flow is optimised;
 > maintain it alongside changes here. The *integration engine* it ships is
-> documented in `files/docs/README_AUTOMATION.md` (starter) and
-> `files/docs/UserManual.md` (full reference).
+> documented in `docs/README_AUTOMATION.md` (starter) and
+> `docs/UserManual.md` (full reference).
 
 ---
 
@@ -18,16 +18,17 @@ A framework to *automatically integrate* peripheral IP into an SoC by RTL manipu
 them into a full SoC checkout on demand, instead of zipping multi-GB trees.
 
 ```text
-auto_integration/
+periph_auto_integration/
 ├── Makefile          # the manager: clone, inject, status, remove, delete
 ├── configs/          # ready-to-use soc_build_config variants (config1..4)
-├── templates/        # per-peripheral config templates (copy into a config)
+├── docs/             # README_AUTOMATION.md + UserManual.md (deployed into the clone)
+├── archive/          # the three V1 legacy frameworks (see below)
 └── files/            # the payload that gets injected into a clone's hw/
     ├── Makefile              # the automation-enabled hw/ Makefile
     ├── master_constraints.xdc
     ├── scripts/             # the engine + per-board bootstrap seeds
     ├── ip_bsv/              # the IP definition recipes
-    └── docs/               # README_AUTOMATION.md + UserManual.md
+    └── templates/           # per-peripheral config templates (copy into a config)
 
 ```
 
@@ -61,7 +62,7 @@ cd ../my_soc/hw && make BOARD=nexys_video build_automated
 | `setup_base` | (B) same as `setup_full` **without** `run_setup_build` (no pip/repomanager). |
 | `remove_automation` | (C) scrub the framework from a clone; restore its original Makefile. |
 | `delete_clone` | (D) delete the clone (warns first). |
-| `status` | (E) report whether a clone exists, is injected, the framework (current v2 or legacy v1) it resembles and a diff of al the files in that framework and whether there are any modifications. |
+| `status` | (E) report whether a clone exists and is injected, score it against V2 **and each legacy framework**, name the closest match, then diff config, payload and docs against *that* framework. |
 | `update_framework` | (F) push the latest `files/` into an existing clone without re-cloning. |
 
 `_setup_core` steps: `git clone` (or skip if `FORCE=1`) → back up `hw/Makefile` to
@@ -96,7 +97,7 @@ Or use `files/scripts/port_to_fresh_clone.sh <clone>/hw` for a scriptable inject
 | `soc_build_config4.yaml` | rtc(no_io), uart3(pinmux)+uart4(pins), i2c2, sspi2+3, gpio(48), wd0 |
 
 Each is a working, compile-verified example. Copy one, or build your own from
-`templates/`.
+`files/templates/`.
 
 ---
 
@@ -113,58 +114,82 @@ No engine or config-schema change is needed to add a board.
 
 ---
 
-## Legacy Framework (V1: RTC Only)
+## Legacy Frameworks (V1)
 
-An older snapshot of the integration engine is maintained in the `archive/auto_integ_legacy_v1` directory. This is the **V1 procedural prototype** that serves as a proof-of-concept.
+Three archived **V1 procedural prototypes** live under `archive/`. They are the
+proof-of-concept ancestors of the V2 engine: each relies on heavily hardcoded
+Python logic and integrates exactly **one** peripheral in **one** routing mode.
 
-Unlike the modular V2 engine, which was exoanded for multi-peripheral, multi-instance support, V1 relies on heavily hardcoded script logic and is strictly limited to integrating the **RTC (Real-Time Clock)** peripheral.
+| Directory | Integrates | Routing |
+| --- | --- | --- |
+| `archive/auto_integ_legacy_v1_rtc/` | RTC | Dedicated pins (PMOD JA) |
+| `archive/auto_integ_legacy_v1_uart/` | UART3 | Dedicated pins — patches `fpga_top.v`, `constraints.xdc`, `TbSoc.bsv` |
+| `archive/auto_integ_legacy_v1_uart_pinmux/` | UART3 | Through the pinmux — patches `pinmux.bsv`, no Verilog/XDC changes |
+
+> **Renamed 2026-08-24.** `auto_integ_legacy_v1_uart_pinmux/` was previously
+> called `auto_integ_legacy_v1_uart_nopinmux/`. The two UART directory names had
+> been the **inverse of their contents** — the one named `_uart` held the
+> *without*-pinmux def while `_nopinmux` held the *with*-pinmux def. `_uart` was
+> already correct and kept its name; only the other moved. If you have an older
+> clone, script or note referring to `_uart_nopinmux`, it means this directory.
+
+The two UART frameworks are forks of the RTC one and share their entire
+`scripts/` directory; they differ in `ip_bsv/`, their `configs/`, and their hw
+Makefile sync lists. V2 supersedes all three: it folds both UART routing modes
+into a single `uart_v1` def selected per-instance by `uart_mode`, and composes
+eight peripherals in one run.
 
 ### V1 Structure
 
 ```text
-auto_integ_legacy_v1/
+auto_integ_legacy_v1_<variant>/
 ├── Makefile          # The legacy manager
-├── configs/          
-│   └── soc_build_config.yaml  # Single static config (RTC only)
-└── files/            
-    ├── ip_bsv/       # Contains only common/ and rtc_v1/
+├── configs/
+│   └── soc_build_config.yaml  # Single static config
+└── files/
+    ├── ip_bsv/       # The one IP def this variant integrates
     ├── scripts/      # V1 procedural python scripts
     ├── Makefile      # Legacy hw/ root Makefile
-    └── master_constraints.xdc
-
+    ├── master_constraints.xdc
+    └── docs/         # Variant-specific README_AUTOMATION.md
 ```
 
 ### V1 Usage
 
-The legacy environment manager shares the same interface as V2, but uses different default variables tailored for isolated RTC testing:
+Each legacy manager shares the V2 interface but has its own default clone name
+and no `CONFIG_SELECT` (there is only one config per variant).
 
-* **Default Clone Name:** `gc2025_autortc`
-* **Default Config:** Directly targets `soc_build_config.yaml` (no multi-config selection).
+| Framework | Default `CLONE_NAME` |
+| --- | --- |
+| `auto_integ_legacy_v1_rtc` | `gc2025_autortc` |
+| `auto_integ_legacy_v1_uart` | `gc2025_autouart` |
+| `auto_integ_legacy_v1_uart_pinmux` | `gc2025_autouart_pinmux` |
 
 ```bash
-# Navigate to the legacy archive
-cd archive/auto_integ_legacy_v1
-
-# Setup the legacy RTC-only environment
-make setup_base SETUP_PATH=../../workspace CLONE_NAME=gc2025_autortc
-
+cd archive/auto_integ_legacy_v1_uart
+make setup_base SETUP_PATH=../../workspace CLONE_NAME=gc2025_autouart
 ```
 
-The targets `setup_full`, `setup_base`, `remove_automation`, `status`, `delete_clone`, and `update_framework` function identically to the V2 manager, but interact predominantly with the V1 engine payload.
-
-The Makefile in this root can interact with the legacy framework using the `status` target to determine if an existing clone has been injected with the current framework (v2) or the legacy framework (v1). The Makefile in the legacy framework root has the same functionality.
+`setup_full`, `setup_base`, `remove_automation`, `status`, `delete_clone` and
+`update_framework` all behave as in V2, against the V1 payload.
 
 ### Cross-Framework Interoperability
 
-Because the legacy prototype is archived within this repository (`archive/auto_integ_legacy_v1`), developers may occasionally interact with hardware clones deployed using the older standards. To prevent architectural confusion, the diagnostic `status` targets in both the root Makefile and the legacy Makefile are mathematically cross-aware.
+Because clones get reused across experiments, the `status` targets in **all
+four** managers (V2 plus the three legacy ones) are mutually aware. Running
+`make status` from this root Makefile:
 
-When you execute `make status` from **this Main Makefile**:
+1. **Candidate scoring.** It computes a byte-for-byte match score for the clone against the V2 payload (`files/`) and against every archived legacy framework (`archive/*/files`), printing one `[CANDIDATE]` line per framework so you see the margin, not just the verdict.
+2. **Closest-match selection.** The highest scorer wins — so a clone injected by the pinmux UART manager is recognised specifically as *that* framework, not merely as "some legacy V1".
+3. **Tie-break.** The legacy frameworks share most of their payload, so ties are resolved by checking which framework ships a `soc_build_config.yaml` matching the clone's active config.
+4. **Targeted diffing.** The configuration check, deep integrity scan, and documentation check then all run against the **winning** framework, using its own `configs/` and `docs/` as the reference.
+5. **Colour routing.** A V2 match is `GREEN`; any legacy match is a `YELLOW` deprecation warning.
 
-1. **Resemblance Checker:** It calculates a byte-for-byte footprint of the target clone to determine if it is running the current Main V2 framework or the archived Legacy V1 framework (located at `archive/auto_integ_legacy_v1/files`).
-2. **Cross-Validation:** If the clone was injected using the Legacy V1 manager, this main `status` target will successfully detect it, flag the resemblance as `LEGACY V1`, and perform a deep integrity scan against the V1 legacy payload directories.
-3. **Color Routing:** To enforce deprecation awareness, this main Makefile flags a V2 match as a `GREEN` success (since it is the current production standard), and a V1 match as a `YELLOW` warning (indicating the clone is structurally sound but running a deprecated architecture).
+Legacy frameworks are discovered by glob, so adding a fourth one to `archive/`
+needs no edit to any `status` target.
 
-The Makefile in the **Legacy Framework archive** has the exact same cross-awareness functionality, but logically inverted (local V1 is `GREEN`, external V2 is a `YELLOW` warning).
-
+Each legacy manager implements the same logic inverted for its own vantage
+point: it scores itself, V2 (`../../files`), and its siblings (`../*/files`),
+colouring a match on *itself* `GREEN` and V2 or a sibling `YELLOW`.
 
 ---

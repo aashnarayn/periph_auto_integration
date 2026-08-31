@@ -1,0 +1,22 @@
+# Centralized config file for Peripheral Automation
+# Location: gc2025/hw/soc_build_config.yaml
+
+target_board: "nexys_video"
+board_dir: "boards/nexys_video"
+pin_map_path: "boards/nexys_video/pin_map.yaml"
+
+automated_peripherals:
+  - name: "uart_v1"
+    def_path: "ip_bsv/uart_v1/uart_v1.yaml"
+    context:
+      verilog_port_name: "uart3"
+      uart_slave_macro: "UART3_slave_num"
+      uart_slave_val: "3"
+      uart_base_macro: "UART3Base"
+      uart_base_addr: "0001_1600"
+      uart_end_macro: "UART3End"
+      uart_end_addr: "0001_1640"
+      uart_rx_cell: "12"
+      uart_tx_cell: "13"
+      uart_rx_mux: "1"
+      uart_tx_mux: "1"
