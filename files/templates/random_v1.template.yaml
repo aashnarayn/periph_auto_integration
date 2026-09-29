@@ -1,0 +1,34 @@
+# =============================================================================
+# TEMPLATE: random_v1  (random-number generator, SIMULATION ONLY)
+# =============================================================================
+# Reuses devices/random. A plain AXI4-Lite mixed-cluster slave: no pins, no
+# interrupt, no module parameters. Registers: enb_reg 'h0 (write bit0 = enable),
+# res_reg 'h8 (read pops a value).
+#
+# SIMULATION ONLY. The generator has no synthesizable path -- it reaches its
+# source through `import "BVI" ConstrainedRandom` ($random, simulation-only) or
+# `import "BDPI" rand32()` (Bluesim only). `simulate_ifdef: true` therefore wraps
+# every patch it makes in `ifdef simulate / `endif, exactly as the baseline
+# guards sign_dump. Without that flag it would compile, pass every audit, and
+# then fail in Vivado synthesis.
+#
+# LIST THIS PERIPHERAL LAST in automated_peripherals: it splits the mixed-cluster
+# slave counters into two `ifdef branches, and any unconditional peripheral
+# applied after it would need a slave number valid in both.
+# -----------------------------------------------------------------------------
+
+- name: random_v1                          # peripheral name; matches ip_bsv/random_v1
+  def_path: ip_bsv/random_v1/random_v1.yaml
+  simulate_ifdef: true                     # <criteria>_ifdef -> wrap all patches in `ifdef <criteria>
+
+  base_context: {}                         # no xdc_file: an ifdef-gated peripheral
+                                           # owns no pin constraints (XDC is TCL,
+                                           # it has no `ifdef -- the engine refuses)
+
+  instances:                               # one generator is enough for an SoC
+  - instance_id: '0'                       # -> random0
+    slave_id_macro: Random_slave_num       # Soc.defines macro receiving the allocated slot
+    base_macro: RandomBase                 # address-window START macro name
+    base_addr: '0004_0A00'                 # first free window above watchdog0 ('h0004_09FF)
+    end_macro: RandomEnd                   # address-window END macro name
+    end_addr: '0004_0AFF'                  # stays well below XADCBase ('h0004_1000)

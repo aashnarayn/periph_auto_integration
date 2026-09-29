@@ -1,0 +1,205 @@
+name: "random_v1"
+yaml_version: "2.0"
+description: >
+  Add the random-number generator (devices/random) as a mixed-cluster slave,
+  SIMULATION ONLY.
+
+  The IP is a plain AXI4-Lite slave with no pins, no interrupt and no module
+  parameters: mkrandom_axi4lite's whole interface is its slave port. Two
+  registers -- enb_reg 'h0 (write bit0 = enable) and res_reg 'h8 (read pops one
+  value off the generator FIFO).
+
+  WHY IT IS IFDEF-GATED: the generator has no synthesizable path. random.bsv
+  draws from Randomizable.bsv, which reaches its source either through
+  `import "BVI" ConstrainedRandom` (whose Verilog primitive generates values
+  with $random, a simulation-only system task) or through
+  `import "BDPI" rand32()` (Bluesim only). Integrated unconditionally it would
+  pass bsc, pass every audit, and then fail or silently degrade in Vivado
+  synthesis. Every patch here is therefore emitted inside `ifdef simulate, set
+  by `simulate_ifdef: true` on the peripheral in soc_build_config.yaml.
+
+  This mirrors how the baseline already guards sign_dump: decoder arm,
+  instantiation and fabric connection each wrapped, and the slave-count macro
+  split into a simulate value and an else value.
+
+  ADDRESS MAP: 'h0004_0A00..0AFF, the first free 256-byte window above the slots
+  rtc_v1 / gptimer_v1 / watchdog_v1 claim ('h0004_0600..09FF) and well below
+  XADCBase ('h0004_1000). It is inside MixedClusterBase..MixedClusterEnd, so no
+  cluster-window bump is needed (UserManual Section 24) and the slack at the end
+  of the band absorbs it without shifting any existing macro.
+
+  INDEPENDENCE: no ordering dependency on any other IP.
+    * Cluster slave slot. Random_slave_num is the `allocated_slot` the
+      MixedCluster_err_slave_num counter is displacing, computed at apply time.
+    * PLIC. None -- the IP raises no interrupt, so it touches no PLIC state, no
+      interrupt bus and no width macro. UserManual Section 17 Rule 3.
+    * Pins. None, so no constraints.xdc and no fpga_top.v patches. (An
+      ifdef-gated peripheral may not own XDC patches at all: XDC is TCL and has
+      no `ifdef. The engine refuses.)
+    * TbSoc. Nothing reaches chip_io, so no tie-off is needed.
+
+  ORDERING RULE: list this peripheral LAST in automated_peripherals. It is the
+  one that splits MixedCluster_Num_Slaves / _err_slave_num into two `ifdef
+  branches; any unconditional peripheral applied AFTER it would have to grow
+  both branches, and its {allocated_slot} would then differ per branch. The
+  engine detects that and fails with this instruction rather than emitting a
+  slave number that is wrong in one of the two builds.
+
+  IDEMPOTENCY: every patch carries a skip guard keyed on text that exists only
+  once the patch has landed, so re-running any phase is a no-op. The counter
+  patches guard on `\`define Random_slave_num`, never on {calculated_val}.
+
+anchors:
+  bsvpath_entry:
+    file: "bsvpath"
+    pattern: '^devices/gptimer/'
+    position: "after"
+
+  # Anchored on PinmuxEnd: present in a pristine tree and owned by no other
+  # def (gptimer takes GPTimer3End, watchdog WatchDog0End, i2c I2C1End), so
+  # random_v1 depends on no other peripheral being present. Declaration order
+  # is not address order -- see UserManual Section 26.
+  soc_defines_memory:
+    file: "{board_dir}/Soc.defines"
+    pattern: "^`define PinmuxEnd\\s+'h0004_15FF"
+    position: "after"
+
+  soc_defines_num_slaves:
+    file: "{board_dir}/Soc.defines"
+    pattern: '^`define\s+MixedCluster_Num_Slaves\s+\d+'
+    position: "replace"
+
+  soc_defines_err_slave:
+    file: "{board_dir}/Soc.defines"
+    pattern: '^`define\s+MixedCluster_err_slave_num\s+\d+'
+    position: "replace"
+
+  mixed_cluster_import:
+    file: "{board_dir}/mixed_cluster.bsv"
+    pattern: '^\s*import gpio :: \* ;'
+    position: "after"
+
+  mixed_cluster_wrapper:
+    file: "{board_dir}/mixed_cluster.bsv"
+    pattern: '^\s*module mki2c \(Ifc_i2c_axi4lite#\(`paddr, `buswidth, `USERSPACE\)\);[\s\S]*?endmodule'
+    position: "after"
+    multiline: true
+
+  mixed_cluster_instantiation:
+    file: "{board_dir}/mixed_cluster.bsv"
+    pattern: '^\s*let gpio <- mkgpio\(\);'
+    position: "after"
+
+  mixed_cluster_addr_decoder:
+    file: "{board_dir}/mixed_cluster.bsv"
+    pattern: 'slave_num = `I2C0_slave_num;'
+    position: "after"
+
+  mixed_cluster_axi_conn:
+    file: "{board_dir}/mixed_cluster.bsv"
+    pattern: 'mkConnection \(fabric\.v_to_slaves \[`I2C0_slave_num \],\s*i2c0\.slave\);'
+    position: "after"
+
+patches:
+  # === bsvpath: register devices/random ===
+  # Left UNWRAPPED: bsvpath is a plain path list with no preprocessor, and an
+  # entry whose package nothing imports is never compiled.
+  - anchor_ref: "bsvpath_entry"
+    code: "devices/random"
+    skip_if_contains: "devices/random"
+    apply_once: true
+
+  # === Soc.defines: MixedCluster_Num_Slaves (+1, simulate branch only) ===
+  - anchor_ref: "soc_defines_num_slaves"
+    code: "`define MixedCluster_Num_Slaves {calculated_val}"
+    skip_if_contains: "`define {slave_id_macro}"
+    apply_once: true
+    type: "cluster_config"
+    target_macro: "MixedCluster_Num_Slaves"
+    increment_by_instances: true
+
+  # === Soc.defines: MixedCluster_err_slave_num (+1, simulate branch only) ===
+  # Emits ONLY the counter line; the slave number itself is a separate regex
+  # patch below, because an ifdef-gated cluster_config patch must be one line.
+  - anchor_ref: "soc_defines_err_slave"
+    code: "`define MixedCluster_err_slave_num {calculated_val}"
+    skip_if_contains: "`define {slave_id_macro}"
+    apply_once: true
+    type: "cluster_config"
+    target_macro: "MixedCluster_err_slave_num"
+    increment_by_instances: true
+
+  # === Soc.defines: address window + the allocated slave number ===
+  # Listed AFTER both counters: {allocated_slot} is published onto the instance
+  # by the err_slave_num counter patch above, so this must follow it.
+  - anchor_ref: "soc_defines_memory"
+    code: |
+      {base_macro}    'h{base_addr}
+      {end_macro}     'h{end_addr}
+      `define {slave_id_macro} {allocated_slot}
+    skip_if_contains: "`define {base_macro}"
+    instance_aware: true
+
+  # === mixed_cluster.bsv: import ===
+  - anchor_ref: "mixed_cluster_import"
+    code: "import random :: * ;"
+    skip_if_contains: "import random :: * ;"
+    apply_once: true
+    indent_context: "package_body"
+
+  # === mixed_cluster.bsv: synthesis wrapper ===
+  # mkrandom_axi4lite takes no parameters, so the wrapper only pins the type.
+  - anchor_ref: "mixed_cluster_wrapper"
+    code: |
+      (*synthesize*)
+      module mkrandom(Ifc_random_axi4lite#(`paddr, `buswidth, `USERSPACE));
+        let ifc();
+        mkrandom_axi4lite _temp(ifc);
+        return ifc;
+      endmodule
+    skip_if_contains: "module mkrandom(Ifc_random_axi4lite"
+    apply_once: true
+    indent_context: "package_body"
+    blank_line_before: true
+
+  # === mixed_cluster.bsv: instantiate ===
+  - anchor_ref: "mixed_cluster_instantiation"
+    code: "let random{instance_id} <- mkrandom();"
+    skip_if_contains: "let random{instance_id} <- mkrandom()"
+    instance_aware: true
+    indent_context: "module_body"
+
+  # === mixed_cluster.bsv: address decoder arm ===
+  - anchor_ref: "mixed_cluster_addr_decoder"
+    code: |
+      else if(addr>= `{base_macro} && addr<= `{end_macro})
+        slave_num = `{slave_id_macro};
+    skip_if_contains: "`{base_macro} &&"
+    instance_aware: true
+    indent_context: "function_body"
+
+  # === mixed_cluster.bsv: AXI4-Lite fabric connection ===
+  - anchor_ref: "mixed_cluster_axi_conn"
+    code: "mkConnection (fabric.v_to_slaves [`{slave_id_macro} ],random{instance_id}.slave);"
+    skip_if_contains: "[`{slave_id_macro} ]"
+    instance_aware: true
+    indent_context: "module_body"
+
+# =============================================================================
+# ANCHOR REFERENCE (for --pre-audit / --post-audit)
+# =============================================================================
+# PRE-AUDIT (must exist in a pristine tree):
+#   bsvpath:                       "^devices/gptimer/"
+#   {board_dir}/Soc.defines:       "^`define PinmuxEnd 'h0004_15FF"
+#   {board_dir}/Soc.defines:       "^`define MixedCluster_Num_Slaves \d+"
+#   {board_dir}/Soc.defines:       "^`define MixedCluster_err_slave_num \d+"
+#   {board_dir}/mixed_cluster.bsv: "import gpio :: * ;"
+#   {board_dir}/mixed_cluster.bsv: "module mki2c (...) ... endmodule"
+#   {board_dir}/mixed_cluster.bsv: "let gpio <- mkgpio();"
+#   {board_dir}/mixed_cluster.bsv: "slave_num = `I2C0_slave_num;"
+#   {board_dir}/mixed_cluster.bsv: "mkConnection (fabric.v_to_slaves [`I2C0_slave_num ], i2c0.slave);"
+#
+# POST-AUDIT (all inside `ifdef simulate):
+#   Soc.defines:       RandomBase/RandomEnd, Random_slave_num = {allocated_slot}
+#   Soc.defines:       MixedCluster_Num_Slaves / _err_slave_num +1 in the simulate arm only
+#   mixed_cluster.bsv: import, mkrandom wrapper, instance, decoder arm, fabric connection

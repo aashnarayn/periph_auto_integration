@@ -313,6 +313,7 @@ link_vcs_gdb: ## Generate simulation executable using vcs for GDB
 generate_verilog: $(BSVBUILDDIR)/$(TOP_BIN)
 	@cp ${BS_VERILOG_LIB}/../Verilog.Vivado/RegFile.v ${VERILOGDIR}
 	@cp ${BS_VERILOG_LIB}/../Verilog.Vivado/BRAM2BELoad.v ${VERILOGDIR}
+	@cp ./common_verilog/BRAM1Load.v ${VERILOGDIR}
 	@cp ${BS_VERILOG_LIB}/FIFO2.v ${VERILOGDIR}
 	@cp ${BS_VERILOG_LIB}/FIFO1.v ${VERILOGDIR}
 	@cp ${BS_VERILOG_LIB}/FIFO10.v ${VERILOGDIR}
@@ -479,7 +480,8 @@ clean_all: ## Clean all things including BSV and fpga_project and verification
 .PHONY: track_pin_map
 .PHONY: sync_bsv_patches sync_automated_files
 .PHONY: restore_autointeg_patches reset_autointeg_baseline bootstrap_board clear_pycache
-.PHONY: pre_validate_automation post_validate_automation _check_automation_board
+.PHONY: pre_validate_automation post_validate_automation post_validate_automation_bsv
+.PHONY: _check_automation_board
 
 # Guard: the automation is driven by soc_build_config.yaml (target_board), but the
 # sync targets copy boards/$(BOARD)/ up to the hw/ root. If $(BOARD) does not match
@@ -495,6 +497,7 @@ _check_automation_board:
 	fi
 .PHONY: check_migration migrate_yaml migrate_yaml_dry restore_yaml_backup
 .PHONY: quick_build_automated build_automated
+.PHONY: quick_build_sim_automated build_sim_automated
 
 # === PIN MAP TRACKING (V2: Uses --track-pin-map flag) ===
 track_pin_map:
@@ -627,6 +630,14 @@ post_validate_automation:
 	@echo "[INFO] Post-validating peripheral automation..."
 	@python3 scripts/peripheral_auto_integrator.py --config soc_build_config.yaml --post-audit
 
+# Simulation applies the bsvpath + BSV phases only: the sim top (mkTbSoc)
+# instantiates mkSoc directly and never reaches fpga_top.v or constraints.xdc.
+# Auditing those phases would fail on patches that were correctly never applied,
+# so scope the audit to what the sim flow actually ran.
+post_validate_automation_bsv:
+	@echo "[INFO] Post-validating peripheral automation (BSV phases only)..."
+	@python3 scripts/peripheral_auto_integrator.py --config soc_build_config.yaml --post-audit --bsv
+
 check_migration:
 	@echo "[INFO] Checking if soc_build_config.yaml requires migration..."
 	@python3 scripts/peripheral_auto_integrator.py --config soc_build_config.yaml --check-migration || \
@@ -683,10 +694,42 @@ endif
 	@$(MAKE) generate_boot_files ip_build board_build
 	@echo "[INFO] Automated build complete for $(BOARD)"
 
-# === TOP-LEVEL ENTRY POINT ===
+# === AUTOMATED SIMULATION BUILD FLOW ===
+# The sim counterpart of quick_build_automated. Three differences, all forced by
+# `mkTbSoc` being the top module instead of the FPGA wrapper:
+#   1. run_setup_simulate (not run_setup_build) -- it points soc_config at
+#      sample_config/c$(XLEN_build)_$(BOARD)_sim/, whose core$(XLEN_build).yaml
+#      carries `compile_target: 'sim'`. That is what makes soc_config emit the
+#      `simulate` macro, so `ifdef simulate peripherals appear automatically.
+#   2. BSV phases only -- no fpga_top.v routing, no XDC, hence no pin map.
+#   3. generate_boot_files_sim + link_verilator instead of the bitstream targets.
+quick_build_sim_automated: _check_automation_board pre_validate_automation
+	@echo "[INFO] Updating bsvpath ..."
+	@$(MAKE) update_bsvpath
+	@echo "[INFO] Running simulate setup..."
+	@$(MAKE) run_setup_simulate
+ifeq ($(SKIP_DRY_RUN),)
+	@echo "[INFO] Running safety dry-run (set SKIP_DRY_RUN=1 to skip)..."
+	@$(MAKE) run_autointeg_complete_dry
+endif
+	@echo "[INFO] Applying BSV patches..."
+	@$(MAKE) run_autointeg_bsv
+	@$(MAKE) sync_bsv_patches
+	@echo "[INFO] Generating Verilog (BSV -> Verilog compilation)..."
+	@$(MAKE) generate_verilog -j
+	@echo "[INFO] Running post-validation (BSV phases)..."
+	@$(MAKE) post_validate_automation_bsv
+	@echo "[INFO] Generating boot files and linking the Verilator executable..."
+	@$(MAKE) generate_boot_files_sim link_verilator
+	@echo "[INFO] Automated simulation build complete for $(BOARD)"
+
+# === TOP-LEVEL ENTRY POINTS ===
 .PHONY: build_automated
 build_automated: ## Build with full peripheral automation and validation
 	@make quick_build_automated
+
+build_sim_automated: ## Build the Verilator simulation with full peripheral automation
+	@make quick_build_sim_automated
 
 # === OPTIONAL: Override default 'build' target if AUTOMATE_PERIPHERALS=1 ===
 # Uncomment below to make 'make build' use automation by default

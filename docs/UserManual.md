@@ -50,10 +50,10 @@ board → root before compilation.
 | `ip_bsv/gptimer_v1/` | Adds one direct-connected general-purpose timer (GPTimer4) beside GPTimer0–3, with a discrete PLIC interrupt. Adds no BSV source and no `bsvpath` entry — the IP and its `mkgptimer` wrapper already exist (see §19) |
 | `ip_bsv/watchdog_v1/` | Adds one direct-connected watchdog (wd0) with a discrete PLIC interrupt. Reuses the previously-unwired `devices/watchdog/` RTL: adds the `bsvpath` entry, the import, and a `mkwdt` synthesis wrapper. `reset_out` goes to an observation pin only, **not** the SoC reset tree (see §20) |
 | `ip_bsv/<ip>/<ip>.bsv`, `*.defines` | The peripheral's actual RTL + register-map defines |
-| `scripts/peripheral_auto_integrator.py` | The engine: VFS, handlers, atomic commit, restore |
-| `scripts/utils.py` | Logging, template resolution, `IndentationAnalyzer` + `INDENT_PROFILE` |
+| `scripts/peripheral_auto_integrator.py` | The executor: CLI + orchestration. Logic lives in `scripts/autointeg/` (see that package's docstring for the module map) |
+| `scripts/autointeg/common.py` | Logging, template resolution, `IndentationAnalyzer` + `INDENT_PROFILE` |
 | `scripts/indent_tools.py` | Unified indentation toolkit — `normalize` (whole-file tab→space + blank-run cap), `cleanup` (surgical one-time fixes), `audit` (policy audit of automation-added lines); see §6 |
-| `scripts/xdc_analyzer.py` | Board pin-map / XDC constraint handling |
+| `scripts/autointeg/xdc.py` | Board pin-map / XDC constraint handling |
 | `.automation_backup/` | The pristine baseline: pre-automation snapshots + `manifest.json`. Captured once on the first real run, kept across restores, dropped only by `make reset_autointeg_baseline` (see §8) |
 | `boards/<board>/pin_map.yaml` | Exported pin state, regenerated on every commit |
 
@@ -155,9 +155,19 @@ patches:
 | `type` | Used for |
 |---|---|
 | `regex` (default) | Plain insert / replace at an anchor |
-| `plic_vector` | Interrupt-vector width + concat management (width-agnostic) |
+| `plic_vector` | **LEGACY — do not use in new defs.** Interrupt-vector width + concat management (width-agnostic) |
 | `cluster_config` | Macro counters in `Soc.defines` (e.g. `*_Num_Slaves`) and derived widths |
 | `xdc_pin_assign` | Pin placement with automatic conflict fallback |
+
+> **`plic_vector` is superseded.** No V2 def declares it — all eight insert
+> their PLIC signals with the default `regex` handler at a dedicated marker
+> anchor, guarded by `skip_if_contains` (see `gptimer_v1.yaml`, where
+> `mixed_cluster_plic_vector` is an anchor *name*, not a `type:`). The §21
+> derived-macro refactor took width ownership away from it: with
+> `Bit#(`PLICWidth)` in `mixed_cluster.bsv` its width branch cannot fire, as the
+> handler's own code notes. It survives only because the three V1 legacy
+> frameworks still use it. **New peripherals: copy the plain-insert pattern.**
+> Scheduled for removal — see `docs/PLANNED_UPGRADES.md` UP-01.
 
 ---
 
@@ -194,7 +204,7 @@ Note that PWM touches **no** `Soc.defines`, `mixed_cluster.bsv` or PLIC state.
 
 **Policy: injected code is always spaces, 2 per structural level.** The engine
 never guesses per-patch — a patch names an `indent_context` and the engine looks
-up the base indent in a central table (`INDENT_PROFILE` in `scripts/utils.py`).
+up the base indent in a central table (`INDENT_PROFILE` in `scripts/autointeg/common.py`).
 
 | `indent_context` | Width | Use for |
 |---|---|---|

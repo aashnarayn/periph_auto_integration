@@ -7,7 +7,7 @@ Zero CLI logic, zero migration logic, zero side-effects on import.
 """
 
 from typing import Dict, List
-from utils import ContextGenerator
+from .common import ContextGenerator
 
 
 class RTCv1ContextGenerator(ContextGenerator):

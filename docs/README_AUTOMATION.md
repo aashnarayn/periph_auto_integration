@@ -20,10 +20,8 @@ gc2025/hw/
 ├── UserManual.md                # Full documentation
 ├── scripts/
 │   ├── peripheral_auto_integrator.py  # The engine (VFS, handlers, backup/restore)
-│   ├── utils.py                       # Logging, templates, IndentationAnalyzer
+│   ├── autointeg/                     # the framework package (functional modules)
 │   ├── indent_tools.py                # normalize / cleanup / audit
-│   ├── xdc_analyzer.py                # Pin map + XDC conflict resolution
-│   └── peripheral_registry.py         # Optional per-IP context generators
 ├── boards/
 │   └── nexys_video/             # Board sources (patched by automation)
 │       ├── Soc.defines

@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 
 # Project utilities
-from utils import log_pass, log_fail, log_warn, log_info
+from .common import log_pass, log_fail, log_warn, log_info
 
 
 class BoardSupportAnalyzer:

@@ -83,8 +83,6 @@ make setup_base SETUP_PATH=/path/to CLONE_NAME=existing_soc FORCE=1 \
 
 ```
 
-Or use `files/scripts/port_to_fresh_clone.sh <clone>/hw` for a scriptable inject.
-
 ---
 
 ## The four shipped configs
